@@ -74,7 +74,31 @@ async def my_bookings(callback: CallbackQuery):
         "Hozircha aktiv bron yo'q.",
         reply_markup=keyboard
     )
+@dp.callback_query(F.data == "book_futbol")
+async def book_futbol(callback: CallbackQuery):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_main")],
+    ])
+    await callback.message.edit_text(
+        "✅ Arizangiz qabul qilindi!\n\n"
+        "⚽ Mini Futbol Maydon\n"
+        "📍 19-maktab yonida\n\n"
+        "Tez orada siz bilan bog'lanamiz.",
+        reply_markup=keyboard
+    )
 
+@dp.callback_query(F.data == "book_voleybol")
+async def book_voleybol(callback: CallbackQuery):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_main")],
+    ])
+    await callback.message.edit_text(
+        "✅ Arizangiz qabul qilindi!\n\n"
+        "🏐 Voleybol Maydoni\n"
+        "📍 19-maktab yonida\n\n"
+        "Tez orada siz bilan bog'lanamiz.",
+        reply_markup=keyboard
+    )    
 async def main():
     await dp.start_polling(bot)
 
