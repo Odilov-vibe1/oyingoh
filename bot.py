@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
+from aiogram.exceptions import TelegramBadRequest
 
 TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
@@ -17,6 +18,13 @@ FIELDS = {
     "voleybol": {"name": "Voleybol", "price": "60,000", "emoji": "🏐"},
 }
 HOURS = [f"{h:02d}:00" for h in range(5, 23)]
+
+async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
 
 def init_db():
     conn = sqlite3.connect("bookings.db")
@@ -82,21 +90,22 @@ async def start(message: Message):
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(callback: CallbackQuery):
-    await callback.message.edit_text("Qaysi maydonni tanlaysiz?", reply_markup=main_menu())
+    await safe_edit(callback, "Qaysi maydonni tanlaysiz?", main_menu())
 
 @dp.callback_query(F.data.startswith("field:"))
 async def field_selected(callback: CallbackQuery):
     field = callback.data.split(":")[1]
     info = FIELDS[field]
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         f"{info['emoji']} {info['name']}\n💰 {info['price']} so'm/soat\n\nQachonga bron qilmoqchisiz?",
-        reply_markup=day_menu(field)
+        day_menu(field)
     )
 
 @dp.callback_query(F.data.startswith("days:"))
 async def show_days(callback: CallbackQuery):
     field = callback.data.split(":")[1]
-    await callback.message.edit_text("Kunni tanlang:", reply_markup=days_list(field))
+    await safe_edit(callback, "Kunni tanlang:", days_list(field))
 
 @dp.callback_query(F.data.startswith("day:"))
 async def show_slots(callback: CallbackQuery):
@@ -104,9 +113,10 @@ async def show_slots(callback: CallbackQuery):
     date_obj = datetime.now() + timedelta(days=int(offset))
     date_str = date_obj.strftime("%Y-%m-%d")
     label = date_obj.strftime("%d-%m-%Y")
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         f"🕐 {label}\n\n🟢 bo'sh  🔴 band\nVaqtni tanlang:",
-        reply_markup=slots_menu(field, date_str)
+        slots_menu(field, date_str)
     )
 
 @dp.callback_query(F.data == "taken")
@@ -122,7 +132,8 @@ async def book_slot(callback: CallbackQuery):
     user_name = callback.from_user.first_name
     add_booking(field, date_str, time_str, callback.from_user.id, user_name)
     info = FIELDS[field]
-    await callback.message.edit_text(
+    await safe_edit(
+        callback,
         f"✅ Bron qilindi!\n\n{info['emoji']} {info['name']}\n📅 {date_str}\n🕐 {time_str}\n\nTez orada siz bilan bog'lanishadi."
     )
     if OWNER_ID:
