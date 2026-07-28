@@ -1,248 +1,204 @@
-import asyncio
-import os
-import sqlite3
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart, Command
-from aiogram.exceptions import TelegramBadRequest
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const { Bot } = require("grammy");
+const { PrismaClient } = require("@prisma/client");
+const crypto = require("crypto");
 
-TOKEN = os.environ.get("BOT_TOKEN")
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+// 1. Initsializatsiya
+const app = express();
+const prisma = new PrismaClient();
+const bot = new Bot(process.env.BOT_TOKEN);
+const PORT = process.env.PORT || 3000;
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+// Middleware'lar
+app.use(cors());
+app.use(express.json());
 
-# ============ HUDUD VA MAYDONLAR ============
-# Yangi qishloq/gazon qo'shish uchun shu yerga yangi kalit qo'shing
-REGIONS = {
-    "qishloq1": {
-        "name": "Yakkatut",
-        "fields": {
-            "futbol": {"name": "Mini Futbol", "price": "140,000", "emoji": "⚽", "location": "19-maktab yonida"},
-            "voleybol": {"name": "Voleybol", "price": "60,000", "emoji": "🏐", "location": "19-maktab yonida"},
-        }
+// ----------------------------------------------------
+// 2. TELEGRAM BOT MANTIQI
+// ----------------------------------------------------
+bot.command("start", async (ctx) => {
+  const webAppUrl = process.env.WEBAPP_URL;
+
+  await ctx.reply(
+    `Salom, ${ctx.from.first_name}! 👋\n\n` +
+    `"Oyingoh" platformasiga xush kelibsiz. Mini-futbol va voleybol maydonlarini osongina va tez bron qiling!`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "⚽ Maydon bron qilish (Oyingoh)",
+              web_app: { url: webAppUrl }
+            }
+          ]
+        ]
+      }
     }
+  );
+});
+
+// Botni fonda ishga tushirish (Long Polling)
+bot.start().catch((err) => console.error("Botda xatolik:", err));
+
+// ----------------------------------------------------
+// 3. XAVFSIZLIK MIDDLEWARE (Telegram initData validsiyasi)
+// ----------------------------------------------------
+function verifyTelegramData(req, res, next) {
+  const initData = req.headers["x-telegram-init-data"];
+  
+  // Agarda rivojlantirish (development) rejimida bo'lsangiz tekshiruvni o'tkazib yuborishingiz mumkin
+  if (!initData && process.env.NODE_ENV === "development") {
+    return next();
+  }
+
+  if (!initData) {
+    return res.status(401).json({ error: "Avtorizatsiyadan o'tilmagan!" });
+  }
+
+  try {
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get("hash");
+    urlParams.delete("hash");
+
+    const paramsToSign = Array.from(urlParams.entries())
+      .map(([key, value]) => `${key}=${value}`)
+      .sort()
+      .join("\n");
+
+    const secretKey = crypto
+      .createHmac("sha256", "WebAppData")
+      .update(process.env.BOT_TOKEN)
+      .digest();
+
+    const signature = crypto
+      .createHmac("sha256", secretKey)
+      .update(paramsToSign)
+      .digest("hex");
+
+    if (signature === hash) {
+      // Telegram foydalanuvchi ma'lumotlarini req.tgUser ichiga joylaymiz
+      const user = JSON.parse(urlParams.get("user"));
+      req.tgUser = user;
+      return next();
+    } else {
+      return res.status(403).json({ error: "Ma'lumotlar buzilgan yoki soxta!" });
+    }
+  } catch (error) {
+    return res.status(400).json({ error: "Validsiyada xatolik yuz berdi" });
+  }
 }
-HOURS = [f"{h:02d}:00" for h in range(5, 23)]
 
-def get_field_info(region_id, field_id):
-    return REGIONS[region_id]["fields"][field_id]
+// ----------------------------------------------------
+// 4. REST API ENDPOINT'LARI (Mini App uchun)
+// ----------------------------------------------------
 
-async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
-    try:
-        await callback.message.edit_text(text, reply_markup=keyboard)
-    except TelegramBadRequest:
-        pass
-    await callback.answer()
+// Health check (Render server holatini tekshirish uchun)
+app.get("/", (req, res) => {
+  res.send("Oyingoh Backend API va Bot muvaffaqiyatli ishlamoqda! 🚀");
+});
 
-def init_db():
-    conn = sqlite3.connect("bookings.db")
-    conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT)")
-    conn.commit()
-    conn.close()
+// A) Barcha maydonlar ro'yxatini olish
+app.get("/api/stadiums", async (req, res) => {
+  try {
+    const stadiums = await prisma.stadium.findMany({
+      include: { owner: true }
+    });
+    res.json(stadiums);
+  } catch (error) {
+    res.status(500).json({ error: "Maydonlarni yuklashda xatolik" });
+  }
+});
 
-def get_booked_times(region, field, date):
-    conn = sqlite3.connect("bookings.db")
-    rows = [r[0] for r in conn.execute("SELECT time FROM bookings WHERE region=? AND field=? AND date=?", (region, field, date)).fetchall()]
-    conn.close()
-    return rows
+// B) Bitta maydon ma'lumotlarini olish
+app.get("/api/stadiums/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const stadium = await prisma.stadium.findUnique({
+      where: { id },
+      include: { bookings: true }
+    });
+    
+    if (!stadium) {
+      return res.status(404).json({ error: "Maydon topilmadi" });
+    }
 
-def add_booking(region, field, date, time, user_id, user_name):
-    conn = sqlite3.connect("bookings.db")
-    conn.execute("INSERT INTO bookings (region, field, date, time, user_id, user_name) VALUES (?,?,?,?,?,?)", (region, field, date, time, user_id, user_name))
-    conn.commit()
-    conn.close()
+    res.json(stadium);
+  } catch (error) {
+    res.status(500).json({ error: "Xatolik yuz berdi" });
+  }
+});
 
-def get_upcoming_bookings():
-    today = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect("bookings.db")
-    rows = conn.execute("SELECT id, region, field, date, time, user_name, user_id FROM bookings WHERE date>=? ORDER BY date, time", (today,)).fetchall()
-    conn.close()
-    return rows
+// C) Yangi bron yaratish (Booking)
+app.post("/api/bookings", verifyTelegramData, async (req, res) => {
+  try {
+    const { stadiumId, bookingDate, startTime, endTime, totalPrice } = req.body;
+    const tgUser = req.tgUser;
 
-def get_booking(booking_id):
-    conn = sqlite3.connect("bookings.db")
-    row = conn.execute("SELECT region, field, date, time, user_id, user_name FROM bookings WHERE id=?", (booking_id,)).fetchone()
-    conn.close()
-    return row
+    // 1. Foydalanuvchini bazadan izlash yoki yangi yaratish
+    let user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(tgUser.id) }
+    });
 
-def delete_booking(booking_id):
-    conn = sqlite3.connect("bookings.db")
-    conn.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
-    conn.commit()
-    conn.close()
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          telegramId: BigInt(tgUser.id),
+          firstName: tgUser.first_name,
+          lastName: tgUser.last_name || null,
+          username: tgUser.username || null
+        }
+      });
+    }
 
-# ============ MENYULAR ============
-def region_menu():
-    buttons = [[InlineKeyboardButton(text=f"📍 {r['name']}", callback_data=f"region|{rid}")] for rid, r in REGIONS.items()]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    // 2. Vaqt band emasligini tekshirish (Overbooking'ning oldini olish)
+    const existingBooking = await prisma.booking.findFirst({
+      where: {
+        stadiumId,
+        bookingDate: new Date(bookingDate),
+        startTime,
+        status: { in: ["PENDING", "CONFIRMED"] }
+      }
+    });
 
-def field_menu(region_id):
-    fields = REGIONS[region_id]["fields"]
-    buttons = [[InlineKeyboardButton(text=f"{f['emoji']} {f['name']} — {f['price']} so'm", callback_data=f"field|{region_id}|{fid}")] for fid, f in fields.items()]
-    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_regions")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    if (existingBooking) {
+      return res.status(400).json({ error: "Ushbu vaqt allaqachon band qilingan!" });
+    }
 
-def day_menu(region_id, field_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Bugun", callback_data=f"day|{region_id}|{field_id}|0")],
-        [InlineKeyboardButton(text="🗓 Boshqa kun", callback_data=f"days|{region_id}|{field_id}")],
-        [InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"region|{region_id}")],
-    ])
+    // 3. Bronni saqlash
+    const newBooking = await prisma.booking.create({
+      data: {
+        userId: user.id,
+        stadiumId,
+        bookingDate: new Date(bookingDate),
+        startTime,
+        endTime,
+        totalPrice,
+        status: "CONFIRMED"
+      }
+    });
 
-def days_list(region_id, field_id):
-    buttons = []
-    for i in range(7):
-        d = datetime.now() + timedelta(days=i)
-        buttons.append([InlineKeyboardButton(text=d.strftime("%d-%m"), callback_data=f"day|{region_id}|{field_id}|{i}")])
-    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"field|{region_id}|{field_id}")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    // 4. Foydalanuvchiga Telegram bot orqali tasdiq xabarini yuborish
+    await bot.api.sendMessage(
+      tgUser.id,
+      `✅ **Broningiz tasdiqlandi!**\n\n` +
+      `📅 Sana: ${bookingDate}\n` +
+      `⏰ Vaqt: ${startTime} - ${endTime}\n` +
+      `💰 Summa: ${totalPrice} so'm\n\n` +
+      `Oyingoh xizmatidan foydalanganingiz uchun rahmat!`
+    );
 
-def slots_menu(region_id, field_id, date_str):
-    booked = get_booked_times(region_id, field_id, date_str)
-    buttons, row = [], []
-    for h in HOURS:
-        if h in booked:
-            row.append(InlineKeyboardButton(text=f"🔴 {h}", callback_data="taken"))
-        else:
-            row.append(InlineKeyboardButton(text=f"🟢 {h}", callback_data=f"book|{region_id}|{field_id}|{date_str}|{h}"))
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"field|{region_id}|{field_id}")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    res.status(201).json(newBooking);
+  } catch (error) {
+    console.error("Bron xatoligi:", error);
+    res.status(500).json({ error: "Bron qilishda xatolik yuz berdi" });
+  }
+});
 
-# ============ HANDLERLAR ============
-@dp.message(CommandStart())
-async def start(message: Message):
-    if len(REGIONS) == 1:
-        region_id = list(REGIONS.keys())[0]
-        await message.answer(
-            f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!\n📍 {REGIONS[region_id]['name']}\n\nQaysi maydonni tanlaysiz?",
-            reply_markup=field_menu(region_id)
-        )
-    else:
-        await message.answer(
-            f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!\n\nHududni tanlang:",
-            reply_markup=region_menu()
-        )
-
-@dp.callback_query(F.data == "back_regions")
-async def back_regions(callback: CallbackQuery):
-    if len(REGIONS) == 1:
-        region_id = list(REGIONS.keys())[0]
-        await safe_edit(callback, f"📍 {REGIONS[region_id]['name']}\n\nQaysi maydonni tanlaysiz?", field_menu(region_id))
-    else:
-        await safe_edit(callback, "Hududni tanlang:", region_menu())
-
-@dp.callback_query(F.data.startswith("region|"))
-async def region_selected(callback: CallbackQuery):
-    region_id = callback.data.split("|")[1]
-    await safe_edit(callback, f"📍 {REGIONS[region_id]['name']}\n\nQaysi maydonni tanlaysiz?", field_menu(region_id))
-
-@dp.callback_query(F.data.startswith("field|"))
-async def field_selected(callback: CallbackQuery):
-    _, region_id, field_id = callback.data.split("|")
-    info = get_field_info(region_id, field_id)
-    await safe_edit(
-        callback,
-        f"{info['emoji']} {info['name']}\n📍 {info['location']}\n💰 {info['price']} so'm/soat\n\nQachonga bron qilmoqchisiz?",
-        day_menu(region_id, field_id)
-    )
-
-@dp.callback_query(F.data.startswith("days|"))
-async def show_days(callback: CallbackQuery):
-    _, region_id, field_id = callback.data.split("|")
-    await safe_edit(callback, "Kunni tanlang:", days_list(region_id, field_id))
-
-@dp.callback_query(F.data.startswith("day|"))
-async def show_slots(callback: CallbackQuery):
-    _, region_id, field_id, offset = callback.data.split("|")
-    date_obj = datetime.now() + timedelta(days=int(offset))
-    date_str = date_obj.strftime("%Y-%m-%d")
-    label = date_obj.strftime("%d-%m-%Y")
-    await safe_edit(
-        callback,
-        f"🕐 {label}\n\n🟢 bo'sh  🔴 band\nVaqtni tanlang:",
-        slots_menu(region_id, field_id, date_str)
-    )
-
-@dp.callback_query(F.data == "taken")
-async def taken(callback: CallbackQuery):
-    await callback.answer("Bu vaqt band, boshqasini tanlang", show_alert=True)
-
-@dp.callback_query(F.data.startswith("book|"))
-async def book_slot(callback: CallbackQuery):
-    _, region_id, field_id, date_str, time_str = callback.data.split("|")
-    if time_str in get_booked_times(region_id, field_id, date_str):
-        await callback.answer("Kechirasiz, bu vaqt band bo'ldi", show_alert=True)
-        return
-    user_name = callback.from_user.first_name
-    add_booking(region_id, field_id, date_str, time_str, callback.from_user.id, user_name)
-    info = get_field_info(region_id, field_id)
-    await safe_edit(
-        callback,
-        f"✅ Bron qilindi!\n\n{info['emoji']} {info['name']}\n📅 {date_str}\n🕐 {time_str}\n\nTez orada siz bilan bog'lanishadi."
-    )
-    if OWNER_ID:
-        try:
-            await bot.send_message(
-                OWNER_ID,
-                f"🔔 Yangi bron!\n\n{info['emoji']} {info['name']}\n📅 {date_str}  🕐 {time_str}\n👤 {user_name} (@{callback.from_user.username or 'yoq'})"
-            )
-        except Exception:
-            pass
-
-# ============ ADMIN PANEL ============
-@dp.message(Command("admin"))
-async def admin_panel(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-    rows = get_upcoming_bookings()
-    if not rows:
-        await message.answer("📋 Hozircha aktiv bronlar yo'q.")
-        return
-    await message.answer(f"📋 Jami {len(rows)} ta aktiv bron:")
-    for r in rows:
-        booking_id, region_id, field_id, date, time, user_name, user_id = r
-        info = get_field_info(region_id, field_id)
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel|{booking_id}")]
-        ])
-        await message.answer(
-            f"{info['emoji']} {info['name']}\n📅 {date}  🕐 {time}\n👤 {user_name}",
-            reply_markup=keyboard
-        )
-
-@dp.callback_query(F.data.startswith("cancel|"))
-async def cancel_booking(callback: CallbackQuery):
-    if callback.from_user.id != OWNER_ID:
-        await callback.answer("Sizda ruxsat yo'q", show_alert=True)
-        return
-    booking_id = int(callback.data.split("|")[1])
-    booking = get_booking(booking_id)
-    if not booking:
-        await callback.answer("Bu bron allaqachon bekor qilingan", show_alert=True)
-        return
-    region_id, field_id, date, time, user_id, user_name = booking
-    info = get_field_info(region_id, field_id)
-    delete_booking(booking_id)
-    await callback.message.edit_text(f"❌ Bekor qilindi:\n{info['emoji']} {info['name']}\n📅 {date} 🕐 {time}\n👤 {user_name}")
-    await callback.answer()
-    try:
-        await bot.send_message(
-            user_id,
-            f"⚠️ Kechirasiz, quyidagi broningiz bekor qilindi:\n\n{info['emoji']} {info['name']}\n📅 {date}\n🕐 {time}\n\nBoshqa vaqtni tanlash uchun /start bosing."
-        )
-    except Exception:
-        pass
-
-async def main():
-    init_db()
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+// ----------------------------------------------------
+// 5. SERVERNI ISHGA TUSHIRISH
+// ----------------------------------------------------
+app.listen(PORT, () => {
+  console.log(`Oyingoh serveri ${PORT}-portda ishga tushdi...`);
+});
