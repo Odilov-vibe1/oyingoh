@@ -3,7 +3,10 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+)
 from aiogram.filters import CommandStart, Command
 from aiogram.exceptions import TelegramBadRequest
 
@@ -13,11 +16,9 @@ OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ============ HUDUD VA MAYDONLAR ============
-# Yangi qishloq/gazon qo'shish uchun shu yerga yangi kalit qo'shing
 REGIONS = {
     "qishloq1": {
-        "name": "QISHLOQ_NOMI",
+        "name": "Yakkatut Qishlog'i",
         "fields": {
             "futbol": {"name": "Mini Futbol", "price": "140,000", "emoji": "⚽", "location": "19-maktab yonida"},
             "voleybol": {"name": "Voleybol", "price": "60,000", "emoji": "🏐", "location": "19-maktab yonida"},
@@ -25,6 +26,7 @@ REGIONS = {
     }
 }
 HOURS = [f"{h:02d}:00" for h in range(5, 23)]
+PENDING = {}
 
 def get_field_info(region_id, field_id):
     return REGIONS[region_id]["fields"][field_id]
@@ -39,6 +41,19 @@ async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
 def init_db():
     conn = sqlite3.connect("bookings.db")
     conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, phone TEXT)")
+    conn.commit()
+    conn.close()
+
+def get_user_phone(user_id):
+    conn = sqlite3.connect("bookings.db")
+    row = conn.execute("SELECT phone FROM users WHERE telegram_id=?", (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def save_user_phone(user_id, phone):
+    conn = sqlite3.connect("bookings.db")
+    conn.execute("INSERT OR REPLACE INTO users (telegram_id, phone) VALUES (?,?)", (user_id, phone))
     conn.commit()
     conn.close()
 
@@ -57,7 +72,11 @@ def add_booking(region, field, date, time, user_id, user_name):
 def get_upcoming_bookings():
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect("bookings.db")
-    rows = conn.execute("SELECT id, region, field, date, time, user_name, user_id FROM bookings WHERE date>=? ORDER BY date, time", (today,)).fetchall()
+    rows = conn.execute(
+        "SELECT b.id, b.region, b.field, b.date, b.time, b.user_name, b.user_id, u.phone "
+        "FROM bookings b LEFT JOIN users u ON b.user_id = u.telegram_id "
+        "WHERE b.date>=? ORDER BY b.date, b.time", (today,)
+    ).fetchall()
     conn.close()
     return rows
 
@@ -73,7 +92,18 @@ def delete_booking(booking_id):
     conn.commit()
     conn.close()
 
-# ============ MENYULAR ============
+def get_stats():
+    conn = sqlite3.connect("bookings.db")
+    total = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_end = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    today_count = conn.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (today,)).fetchone()[0]
+    week_count = conn.execute("SELECT COUNT(*) FROM bookings WHERE date>=? AND date<=?", (today, week_end)).fetchone()[0]
+    per_field = conn.execute("SELECT region, field, COUNT(*) FROM bookings GROUP BY region, field ORDER BY COUNT(*) DESC").fetchall()
+    busiest = conn.execute("SELECT time, COUNT(*) c FROM bookings GROUP BY time ORDER BY c DESC LIMIT 1").fetchone()
+    conn.close()
+    return total, today_count, week_count, per_field, busiest
+
 def region_menu():
     buttons = [[InlineKeyboardButton(text=f"📍 {r['name']}", callback_data=f"region|{rid}")] for rid, r in REGIONS.items()]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -115,7 +145,28 @@ def slots_menu(region_id, field_id, date_str):
     buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"field|{region_id}|{field_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ============ HANDLERLAR ============
+def phone_request_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Raqamni yuborish", request_contact=True)]],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+
+async def finalize_booking(region_id, field_id, date_str, time_str, user_id, user_name, username, phone):
+    add_booking(region_id, field_id, date_str, time_str, user_id, user_name)
+    info = get_field_info(region_id, field_id)
+    await bot.send_message(
+        user_id,
+        f"✅ Bron qilindi!\n\n{info['emoji']} {info['name']}\n📅 {date_str}\n🕐 {time_str}\n\nTez orada siz bilan bog'lanishadi."
+    )
+    if OWNER_ID:
+        try:
+            await bot.send_message(
+                OWNER_ID,
+                f"🔔 Yangi bron!\n\n{info['emoji']} {info['name']}\n📅 {date_str}  🕐 {time_str}\n👤 {user_name} (@{username or 'yoq'})\n📞 {phone}"
+            )
+        except Exception:
+            pass
+
 @dp.message(CommandStart())
 async def start(message: Message):
     if len(REGIONS) == 1:
@@ -129,6 +180,85 @@ async def start(message: Message):
             f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!\n\nHududni tanlang:",
             reply_markup=region_menu()
         )
+
+@dp.message(F.contact)
+async def contact_received(message: Message):
+    user_id = message.from_user.id
+    if not message.contact or message.contact.user_id != user_id:
+        await message.answer("Iltimos, faqat o'z raqamingizni yuboring.", reply_markup=ReplyKeyboardRemove())
+        return
+    phone = message.contact.phone_number
+    save_user_phone(user_id, phone)
+    await message.answer("Rahmat! Raqamingiz saqlandi.", reply_markup=ReplyKeyboardRemove())
+    pending = PENDING.pop(user_id, None)
+    if pending:
+        region_id, field_id, date_str, time_str = pending
+        if time_str in get_booked_times(region_id, field_id, date_str):
+            await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring: /start")
+            return
+        await finalize_booking(region_id, field_id, date_str, time_str, user_id, message.from_user.first_name, message.from_user.username, phone)
+
+@dp.message(Command("stats"))
+async def stats_command(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    total, today_count, week_count, per_field, busiest = get_stats()
+    text = "📊 Statistika\n\n"
+    text += f"Jami bronlar: {total}\n"
+    text += f"Bugun: {today_count}\n"
+    text += f"Shu hafta: {week_count}\n\n"
+    if per_field:
+        text += "Maydon bo'yicha:\n"
+        for region_id, field_id, count in per_field:
+            info = get_field_info(region_id, field_id)
+            text += f"  {info['emoji']} {info['name']}: {count} ta\n"
+    if busiest:
+        text += f"\nEng band vaqt: {busiest[0]} ({busiest[1]} marta)"
+    await message.answer(text)
+
+@dp.message(Command("admin"))
+async def admin_panel(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    rows = get_upcoming_bookings()
+    if not rows:
+        await message.answer("📋 Hozircha aktiv bronlar yo'q.")
+        return
+    await message.answer(f"📋 Jami {len(rows)} ta aktiv bron:")
+    for r in rows:
+        booking_id, region_id, field_id, date, time, user_name, user_id, phone = r
+        info = get_field_info(region_id, field_id)
+        phone_line = f"\n📞 {phone}" if phone else "\n📞 raqam yo'q"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel|{booking_id}")]
+        ])
+        await message.answer(
+            f"{info['emoji']} {info['name']}\n📅 {date}  🕐 {time}\n👤 {user_name}{phone_line}",
+            reply_markup=keyboard
+        )
+
+@dp.callback_query(F.data.startswith("cancel|"))
+async def cancel_booking(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("Sizda ruxsat yo'q", show_alert=True)
+        return
+    booking_id = int(callback.data.split("|")[1])
+    booking = get_booking(booking_id)
+    if not booking:
+        await callback.answer("Bu bron allaqachon bekor qilingan", show_alert=True)
+        return
+    region_id, field_id, date, time, user_id, user_name = booking
+    info = get_field_info(region_id, field_id)
+    delete_booking(booking_id)
+    await callback.message.edit_text(f"❌ Bekor qilindi:\n{info['emoji']} {info['name']}\n📅 {date} 🕐 {time}\n👤 {user_name}")
+    await callback.answer()
+    try:
+        await bot.send_message(
+            user_id,
+            f"⚠️ Kechirasiz, quyidagi broningiz bekor qilindi:\n\n{info['emoji']} {info['name']}\n📅 {date}\n🕐 {time}\n\nBoshqa vaqtni tanlash uchun /start bosing."
+        )
+    except Exception:
+        pass
 
 @dp.callback_query(F.data == "back_regions")
 async def back_regions(callback: CallbackQuery):
@@ -180,65 +310,23 @@ async def book_slot(callback: CallbackQuery):
     if time_str in get_booked_times(region_id, field_id, date_str):
         await callback.answer("Kechirasiz, bu vaqt band bo'ldi", show_alert=True)
         return
-    user_name = callback.from_user.first_name
-    add_booking(region_id, field_id, date_str, time_str, callback.from_user.id, user_name)
-    info = get_field_info(region_id, field_id)
-    await safe_edit(
-        callback,
-        f"✅ Bron qilindi!\n\n{info['emoji']} {info['name']}\n📅 {date_str}\n🕐 {time_str}\n\nTez orada siz bilan bog'lanishadi."
-    )
-    if OWNER_ID:
-        try:
-            await bot.send_message(
-                OWNER_ID,
-                f"🔔 Yangi bron!\n\n{info['emoji']} {info['name']}\n📅 {date_str}  🕐 {time_str}\n👤 {user_name} (@{callback.from_user.username or 'yoq'})"
-            )
-        except Exception:
-            pass
-
-# ============ ADMIN PANEL ============
-@dp.message(Command("admin"))
-async def admin_panel(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-    rows = get_upcoming_bookings()
-    if not rows:
-        await message.answer("📋 Hozircha aktiv bronlar yo'q.")
-        return
-    await message.answer(f"📋 Jami {len(rows)} ta aktiv bron:")
-    for r in rows:
-        booking_id, region_id, field_id, date, time, user_name, user_id = r
+    user_id = callback.from_user.id
+    phone = get_user_phone(user_id)
+    if phone:
+        await callback.answer()
+        await finalize_booking(region_id, field_id, date_str, time_str, user_id, callback.from_user.first_name, callback.from_user.username, phone)
         info = get_field_info(region_id, field_id)
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel|{booking_id}")]
-        ])
-        await message.answer(
-            f"{info['emoji']} {info['name']}\n📅 {date}  🕐 {time}\n👤 {user_name}",
-            reply_markup=keyboard
+        try:
+            await callback.message.edit_text(f"✅ Bron qilindi!\n\n{info['emoji']} {info['name']}\n📅 {date_str}\n🕐 {time_str}")
+        except TelegramBadRequest:
+            pass
+    else:
+        PENDING[user_id] = (region_id, field_id, date_str, time_str)
+        await callback.answer()
+        await callback.message.answer(
+            "📱 Bronni tasdiqlash uchun telefon raqamingizni yuboring.\n\nBu soxta bronlarning oldini olish uchun kerak, faqat bir marta so'raladi.",
+            reply_markup=phone_request_keyboard()
         )
-
-@dp.callback_query(F.data.startswith("cancel|"))
-async def cancel_booking(callback: CallbackQuery):
-    if callback.from_user.id != OWNER_ID:
-        await callback.answer("Sizda ruxsat yo'q", show_alert=True)
-        return
-    booking_id = int(callback.data.split("|")[1])
-    booking = get_booking(booking_id)
-    if not booking:
-        await callback.answer("Bu bron allaqachon bekor qilingan", show_alert=True)
-        return
-    region_id, field_id, date, time, user_id, user_name = booking
-    info = get_field_info(region_id, field_id)
-    delete_booking(booking_id)
-    await callback.message.edit_text(f"❌ Bekor qilindi:\n{info['emoji']} {info['name']}\n📅 {date} 🕐 {time}\n👤 {user_name}")
-    await callback.answer()
-    try:
-        await bot.send_message(
-            user_id,
-            f"⚠️ Kechirasiz, quyidagi broningiz bekor qilindi:\n\n{info['emoji']} {info['name']}\n📅 {date}\n🕐 {time}\n\nBoshqa vaqtni tanlash uchun /start bosing."
-        )
-    except Exception:
-        pass
 
 async def main():
     init_db()
