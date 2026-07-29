@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>O'yingoh</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, sans-serif;
+    background: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #111);
+    padding: 16px;
+  }
+  .header { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--tg-theme-hint-color, #888); margin-bottom: 16px; }
+  h1 { font-size: 20px; margin-bottom: 16px; }
+  .card {
+    border: 1px solid var(--tg-theme-hint-color, #ddd);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+  }
+  .card:active { opacity: 0.7; }
+  .price { color: var(--tg-theme-hint-color, #888); font-size: 14px; }
+  .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .slot {
+    padding: 10px 0;
+    text-align: center;
+    border-radius: 10px;
+    background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .slot:active { opacity: 0.7; }
+  .days { display: flex; flex-wrap: wrap; gap: 8px; }
+  .day { padding: 10px 14px; border-radius: 10px; background: var(--tg-theme-secondary-bg-color, #f0f0f0); cursor: pointer; font-size: 14px; }
+  .back { font-size: 14px; color: var(--tg-theme-link-color, #2481cc); margin-bottom: 12px; cursor: pointer; }
+  .confirm-box { text-align: center; padding: 30px 10px; }
+  .confirm-box p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+
+const REGION = { id: "qishloq1", name: "QISHLOQ_NOMI" };
+const FIELDS = {
+  futbol: { name: "Mini Futbol", price: "140,000", emoji: "⚽", location: "19-maktab yonida" },
+  voleybol: { name: "Voleybol", price: "60,000", emoji: "🏐", location: "19-maktab yonida" }
+};
+const HOURS = [];
+for (let h = 5; h <= 22; h++) HOURS.push(String(h).padStart(2,"0") + ":00");
+
+let state = { field: null, date: null, time: null };
+const app = document.getElementById("app");
+
+function fieldSelectScreen() {
+  let html = `<div class="header">📍 ${REGION.name}</div><h1>Qaysi maydonni tanlaysiz?</h1>`;
+  for (const fid in FIELDS) {
+    const f = FIELDS[fid];
+    html += `<div class="card" onclick="selectField('${fid}')">
+      <span>${f.emoji} ${f.name}</span><span class="price">${f.price} so'm</span>
+    </div>`;
+  }
+  app.innerHTML = html;
+}
+
+function selectField(fid) {
+  state.field = fid;
+  dayScreen();
+}
+
+function dayScreen() {
+  const f = FIELDS[state.field];
+  let html = `<div class="back" onclick="fieldSelectScreen()">🔙 Orqaga</div>
+  <h1>${f.emoji} ${f.name}</h1>
+  <p style="margin-bottom:16px;color:var(--tg-theme-hint-color,#888)">📍 ${f.location} · 💰 ${f.price} so'm/soat</p>
+  <div class="days">`;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    const label = i === 0 ? "Bugun" : d.toLocaleDateString("uz-UZ", {day:"2-digit", month:"2-digit"});
+    const iso = d.toISOString().slice(0,10);
+    html += `<div class="day" onclick="selectDay('${iso}')">${label}</div>`;
+  }
+  html += `</div>`;
+  app.innerHTML = html;
+}
+
+function selectDay(iso) {
+  state.date = iso;
+  slotsScreen();
+}
+
+function slotsScreen() {
+  let html = `<div class="back" onclick="dayScreen()">🔙 Orqaga</div>
+  <h1>${state.date}</h1>
+  <p style="margin-bottom:16px;color:var(--tg-theme-hint-color,#888)">Vaqtni tanlang:</p>
+  <div class="slots">`;
+  HOURS.forEach(h => {
+    html += `<div class="slot" onclick="selectTime('${h}')">${h}</div>`;
+  });
+  html += `</div>`;
+  app.innerHTML = html;
+}
+
+function selectTime(h) {
+  state.time = h;
+  confirmScreen();
+}
+
+function confirmScreen() {
+  const f = FIELDS[state.field];
+  app.innerHTML = `
+    <div class="back" onclick="slotsScreen()">🔙 Orqaga</div>
+    <div class="confirm-box">
+      <h1>${f.emoji} ${f.name}</h1>
+      <p>📅 ${state.date}</p>
+      <p>🕐 ${state.time}</p>
+      <p>💰 ${f.price} so'm</p>
+    </div>
+  `;
+  tg.MainButton.setText("✅ Bron qilish");
+  tg.MainButton.show();
+  tg.MainButton.onClick(sendBooking);
+}
+
+function sendBooking() {
+  tg.sendData(JSON.stringify({
+    region: REGION.id,
+    field: state.field,
+    date: state.date,
+    time: state.time
+  }));
+  tg.close();
+}
+
+fieldSelectScreen();
+</script>
+</body>
+</html>
