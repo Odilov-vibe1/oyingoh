@@ -5,48 +5,167 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>O'yingoh</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --navy: #1E2761;
+    --navy-2: #2F3C7E;
+    --coral: #F96167;
+    --gold: #F9E795;
+    --ink: #12163A;
+    --muted: #8891C4;
+    --card: #FFFFFF;
+    --bg: #F4F5FB;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, sans-serif;
-    background: var(--tg-theme-bg-color, #ffffff);
-    color: var(--tg-theme-text-color, #111);
-    padding: 16px;
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    padding-bottom: 24px;
   }
-  .header { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--tg-theme-hint-color, #888); margin-bottom: 16px; }
-  h1 { font-size: 20px; margin-bottom: 16px; }
-  .card {
-    border: 1px solid var(--tg-theme-hint-color, #ddd);
-    border-radius: 12px;
+  .hero {
+    background: linear-gradient(135deg, var(--navy) 0%, var(--navy-2) 65%, var(--coral) 140%);
+    padding: 22px 18px 26px;
+    border-radius: 0 0 22px 22px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::after {
+    content: "";
+    position: absolute;
+    top: -40px; right: -40px;
+    width: 140px; height: 140px;
+    border-radius: 50%;
+    background: rgba(249,231,149,0.18);
+  }
+  .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; position: relative; z-index: 1; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 9px;
+    background: var(--coral);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 15px; color: #fff;
+  }
+  .brand-name { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 15px; color: #fff; letter-spacing: 0.2px; }
+  .hero h1 {
+    font-family: 'Manrope', sans-serif;
+    font-weight: 800;
+    font-size: 22px;
+    color: #fff;
+    line-height: 1.3;
+    margin-bottom: 6px;
+    position: relative; z-index: 1;
+  }
+  .hero p { font-size: 13px; color: rgba(255,255,255,0.75); position: relative; z-index: 1; margin-bottom: 14px; }
+  .stat-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(249,231,149,0.4);
+    border-radius: 20px;
+    padding: 6px 12px;
+    position: relative; z-index: 1;
+  }
+  .stat-chip b { font-family: 'Manrope', sans-serif; color: var(--gold); font-size: 13px; }
+  .stat-chip span { font-size: 11.5px; color: rgba(255,255,255,0.75); }
+
+  .content { padding: 18px; }
+  .section-label {
+    font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 17px;
+    color: var(--ink); margin-bottom: 3px;
+  }
+  .section-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 14px; }
+
+  .field-card {
+    background: var(--card);
+    border-radius: 16px;
     padding: 14px 16px;
     margin-bottom: 10px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 2px 10px rgba(30,39,97,0.08);
     cursor: pointer;
   }
-  .card:active { opacity: 0.7; }
-  .price { color: var(--tg-theme-hint-color, #888); font-size: 14px; }
-  .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .field-card:active { transform: scale(0.98); }
+  .field-icon {
+    width: 46px; height: 46px; border-radius: 13px;
+    background: linear-gradient(135deg, var(--coral), #FF8A7A);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 21px; flex-shrink: 0;
+  }
+  .field-info { flex: 1; }
+  .field-name { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 14.5px; color: var(--ink); }
+  .field-loc { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .field-price { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 13.5px; color: var(--navy-2); white-space: nowrap; }
+  .field-price small { font-weight: 500; color: var(--muted); font-size: 10px; display: block; text-align: right; }
+  .chevron { color: var(--muted); font-size: 16px; }
+
+  .back-link { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--navy-2); font-weight: 600; margin-bottom: 16px; cursor: pointer; }
+
+  .field-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .field-header .field-icon { width: 54px; height: 54px; font-size: 24px; }
+  .field-header h2 { font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 19px; color: var(--ink); }
+  .field-header .meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .field-header .meta b { color: var(--navy-2); }
+
+  .day-grid { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  .day-pill {
+    background: var(--card); border-radius: 12px; padding: 10px 14px;
+    font-size: 13px; font-weight: 600; color: var(--ink);
+    box-shadow: 0 2px 8px rgba(30,39,97,0.07);
+    cursor: pointer; min-width: 64px; text-align: center;
+  }
+  .day-pill.today { background: var(--navy); color: #fff; }
+  .day-pill:active { transform: scale(0.96); }
+
+  .slots-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 14px; }
   .slot {
-    padding: 10px 0;
-    text-align: center;
-    border-radius: 10px;
-    background: var(--tg-theme-secondary-bg-color, #f0f0f0);
-    font-size: 14px;
-    cursor: pointer;
+    padding: 12px 0; text-align: center; border-radius: 12px;
+    font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 13.5px;
+    background: #E7F8EF; color: #1C8A50;
+    cursor: pointer; border: 1px solid #C9EEDA;
   }
-  .slot:active { opacity: 0.7; }
-  .days { display: flex; flex-wrap: wrap; gap: 8px; }
-  .day { padding: 10px 14px; border-radius: 10px; background: var(--tg-theme-secondary-bg-color, #f0f0f0); cursor: pointer; font-size: 14px; }
-  .back { font-size: 14px; color: var(--tg-theme-link-color, #2481cc); margin-bottom: 12px; cursor: pointer; }
-  .confirm-box { text-align: center; padding: 30px 10px; }
-  .confirm-box p { margin: 6px 0; }
+  .slot:active { transform: scale(0.96); }
+  .slot.taken { background: #FBEAEA; color: #C94C4C; border-color: #F3D3D3; cursor: not-allowed; }
+
+  .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.green { background: #1C8A50; }
+  .dot.red { background: #C94C4C; }
+
+  .confirm-card {
+    background: var(--card);
+    border-radius: 18px;
+    padding: 22px 20px;
+    box-shadow: 0 4px 18px rgba(30,39,97,0.10);
+    margin-top: 20px;
+  }
+  .confirm-icon {
+    width: 52px; height: 52px; border-radius: 15px;
+    background: linear-gradient(135deg, var(--coral), #FF8A7A);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px; margin-bottom: 14px;
+  }
+  .confirm-title { font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 18px; color: var(--ink); margin-bottom: 14px; }
+  .confirm-row { display: flex; justify-content: space-between; padding: 9px 0; border-top: 1px solid #F0F1F8; font-size: 13px; }
+  .confirm-row:first-of-type { border-top: none; }
+  .confirm-row .label { color: var(--muted); }
+  .confirm-row .value { font-weight: 600; color: var(--ink); }
 </style>
 </head>
 <body>
 
-<div id="app"></div>
+<div class="hero">
+  <div class="brand">
+    <div class="brand-mark">O</div>
+    <div class="brand-name">O'yingoh</div>
+  </div>
+  <h1 id="heroTitle">Sport maydonini<br>bir necha soniyada bron qiling</h1>
+  <p id="heroSub">📍 QISHLOQ_NOMI</p>
+  <div class="stat-chip"><b>13-18</b><span>bron shu hududda haftasiga</span></div>
+</div>
+
+<div class="content" id="app"></div>
 
 <script>
 const tg = window.Telegram.WebApp;
@@ -55,8 +174,8 @@ tg.expand();
 
 const REGION = { id: "qishloq1", name: "QISHLOQ_NOMI" };
 const FIELDS = {
-  futbol: { name: "Mini Futbol", price: "140,000", emoji: "⚽", location: "19-maktab yonida" },
-  voleybol: { name: "Voleybol", price: "60,000", emoji: "🏐", location: "19-maktab yonida" }
+  futbol: { name: "Mini Futbol", price: "140,000", icon: "⚽", location: "19-maktab yonida" },
+  voleybol: { name: "Voleybol", price: "60,000", icon: "🏐", location: "19-maktab yonida" }
 };
 const HOURS = [];
 for (let h = 5; h <= 22; h++) HOURS.push(String(h).padStart(2,"0") + ":00");
@@ -65,14 +184,22 @@ let state = { field: null, date: null, time: null };
 const app = document.getElementById("app");
 
 function fieldSelectScreen() {
-  let html = `<div class="header">📍 ${REGION.name}</div><h1>Qaysi maydonni tanlaysiz?</h1>`;
+  document.getElementById("heroTitle").innerHTML = "Sport maydonini<br>bir necha soniyada bron qiling";
+  let html = `<div class="section-label">Maydonni tanlang</div><div class="section-sub">Bo'sh vaqtlar rangli belgi bilan ko'rinadi</div>`;
   for (const fid in FIELDS) {
     const f = FIELDS[fid];
-    html += `<div class="card" onclick="selectField('${fid}')">
-      <span>${f.emoji} ${f.name}</span><span class="price">${f.price} so'm</span>
+    html += `<div class="field-card" onclick="selectField('${fid}')">
+      <div class="field-icon">${f.icon}</div>
+      <div class="field-info">
+        <div class="field-name">${f.name}</div>
+        <div class="field-loc">${f.location}</div>
+      </div>
+      <div class="field-price">${f.price}<small>so'm/soat</small></div>
+      <div class="chevron">›</div>
     </div>`;
   }
   app.innerHTML = html;
+  tg.MainButton.hide();
 }
 
 function selectField(fid) {
@@ -82,19 +209,28 @@ function selectField(fid) {
 
 function dayScreen() {
   const f = FIELDS[state.field];
-  let html = `<div class="back" onclick="fieldSelectScreen()">🔙 Orqaga</div>
-  <h1>${f.emoji} ${f.name}</h1>
-  <p style="margin-bottom:16px;color:var(--tg-theme-hint-color,#888)">📍 ${f.location} · 💰 ${f.price} so'm/soat</p>
-  <div class="days">`;
+  document.getElementById("heroTitle").innerHTML = f.icon + " " + f.name;
+  let html = `<div class="back-link" onclick="fieldSelectScreen()">‹ Orqaga</div>
+  <div class="field-header">
+    <div class="field-icon">${f.icon}</div>
+    <div>
+      <h2>${f.name}</h2>
+      <div class="meta">${f.location} · <b>${f.price} so'm/soat</b></div>
+    </div>
+  </div>
+  <div class="section-label">Qachonga bron qilasiz?</div>
+  <div class="section-sub">Kunni tanlang</div>
+  <div class="day-grid">`;
   for (let i = 0; i < 7; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
     const label = i === 0 ? "Bugun" : d.toLocaleDateString("uz-UZ", {day:"2-digit", month:"2-digit"});
     const iso = d.toISOString().slice(0,10);
-    html += `<div class="day" onclick="selectDay('${iso}')">${label}</div>`;
+    html += `<div class="day-pill ${i===0?'today':''}" onclick="selectDay('${iso}')">${label}</div>`;
   }
   html += `</div>`;
   app.innerHTML = html;
+  tg.MainButton.hide();
 }
 
 function selectDay(iso) {
@@ -103,15 +239,17 @@ function selectDay(iso) {
 }
 
 function slotsScreen() {
-  let html = `<div class="back" onclick="dayScreen()">🔙 Orqaga</div>
-  <h1>${state.date}</h1>
-  <p style="margin-bottom:16px;color:var(--tg-theme-hint-color,#888)">Vaqtni tanlang:</p>
-  <div class="slots">`;
+  const f = FIELDS[state.field];
+  let html = `<div class="back-link" onclick="dayScreen()">‹ Orqaga</div>
+  <div class="section-label">${state.date}</div>
+  <div class="legend"><span><i class="dot green"></i>Bo'sh</span><span><i class="dot red"></i>Band</span></div>
+  <div class="slots-grid">`;
   HOURS.forEach(h => {
     html += `<div class="slot" onclick="selectTime('${h}')">${h}</div>`;
   });
   html += `</div>`;
   app.innerHTML = html;
+  tg.MainButton.hide();
 }
 
 function selectTime(h) {
@@ -121,13 +259,16 @@ function selectTime(h) {
 
 function confirmScreen() {
   const f = FIELDS[state.field];
+  document.getElementById("heroTitle").innerHTML = "Bronni tasdiqlang";
   app.innerHTML = `
-    <div class="back" onclick="slotsScreen()">🔙 Orqaga</div>
-    <div class="confirm-box">
-      <h1>${f.emoji} ${f.name}</h1>
-      <p>📅 ${state.date}</p>
-      <p>🕐 ${state.time}</p>
-      <p>💰 ${f.price} so'm</p>
+    <div class="back-link" onclick="slotsScreen()">‹ Orqaga</div>
+    <div class="confirm-card">
+      <div class="confirm-icon">${f.icon}</div>
+      <div class="confirm-title">${f.name}</div>
+      <div class="confirm-row"><span class="label">Manzil</span><span class="value">${f.location}</span></div>
+      <div class="confirm-row"><span class="label">Sana</span><span class="value">${state.date}</span></div>
+      <div class="confirm-row"><span class="label">Vaqt</span><span class="value">${state.time}</span></div>
+      <div class="confirm-row"><span class="label">Narx</span><span class="value">${f.price} so'm</span></div>
     </div>
   `;
   tg.MainButton.setText("✅ Bron qilish");
