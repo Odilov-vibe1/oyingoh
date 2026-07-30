@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, WebAppInfo
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.exceptions import TelegramBadRequest
@@ -16,9 +16,11 @@ OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+MINI_APP_URL = "https://odilov-vibe1.github.io/oyingoh/"
+
 REGIONS = {
     "qishloq1": {
-        "name": "Yakkatut Qishlog'i",
+        "name": "QISHLOQ_NOMI",
         "fields": {
             "futbol": {"name": "Mini Futbol", "price": "140,000", "emoji": "⚽", "location": "19-maktab yonida"},
             "voleybol": {"name": "Voleybol", "price": "60,000", "emoji": "🏐", "location": "19-maktab yonida"},
@@ -26,7 +28,7 @@ REGIONS = {
     }
 }
 HOURS = [f"{h:02d}:00" for h in range(5, 23)]
-PENDING = {}
+STATE = {}  # user_id -> {"step": "name"/"phone", "pending": (region,field,date,time), "name": str}
 
 def get_field_info(region_id, field_id):
     return REGIONS[region_id]["fields"][field_id]
@@ -41,19 +43,25 @@ async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
 def init_db():
     conn = sqlite3.connect("bookings.db")
     conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, phone TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, phone TEXT, full_name TEXT)")
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
-def get_user_phone(user_id):
+def get_user_info(user_id):
     conn = sqlite3.connect("bookings.db")
-    row = conn.execute("SELECT phone FROM users WHERE telegram_id=?", (user_id,)).fetchone()
+    row = conn.execute("SELECT phone, full_name FROM users WHERE telegram_id=?", (user_id,)).fetchone()
     conn.close()
-    return row[0] if row else None
+    if not row:
+        return None, None
+    return row[0], row[1]
 
-def save_user_phone(user_id, phone):
+def save_user_info(user_id, phone, full_name):
     conn = sqlite3.connect("bookings.db")
-    conn.execute("INSERT OR REPLACE INTO users (telegram_id, phone) VALUES (?,?)", (user_id, phone))
+    conn.execute("INSERT OR REPLACE INTO users (telegram_id, phone, full_name) VALUES (?,?,?)", (user_id, phone, full_name))
     conn.commit()
     conn.close()
 
@@ -111,6 +119,7 @@ def region_menu():
 def field_menu(region_id):
     fields = REGIONS[region_id]["fields"]
     buttons = [[InlineKeyboardButton(text=f"{f['emoji']} {f['name']} — {f['price']} so'm", callback_data=f"field|{region_id}|{fid}")] for fid, f in fields.items()]
+    buttons.append([InlineKeyboardButton(text="🚀 Mini App orqali bron qilish", web_app=WebAppInfo(url=MINI_APP_URL))])
     buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_regions")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -147,12 +156,12 @@ def slots_menu(region_id, field_id, date_str):
 
 def phone_request_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Raqamni yuborish", request_contact=True)]],
+        keyboard=[[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]],
         resize_keyboard=True, one_time_keyboard=True
     )
 
-async def finalize_booking(region_id, field_id, date_str, time_str, user_id, user_name, username, phone):
-    add_booking(region_id, field_id, date_str, time_str, user_id, user_name)
+async def finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, username, phone):
+    add_booking(region_id, field_id, date_str, time_str, user_id, full_name)
     info = get_field_info(region_id, field_id)
     await bot.send_message(
         user_id,
@@ -162,13 +171,28 @@ async def finalize_booking(region_id, field_id, date_str, time_str, user_id, use
         try:
             await bot.send_message(
                 OWNER_ID,
-                f"🔔 Yangi bron!\n\n{info['emoji']} {info['name']}\n📅 {date_str}  🕐 {time_str}\n👤 {user_name} (@{username or 'yoq'})\n📞 {phone}"
+                f"🔔 Yangi bron!\n\n{info['emoji']} {info['name']}\n📅 {date_str}  🕐 {time_str}\n👤 {full_name} (@{username or 'yoq'})\n📞 {phone}"
             )
         except Exception:
             pass
 
+async def start_info_flow(user_id, pending):
+    STATE[user_id] = {"step": "name", "pending": pending}
+    await bot.send_message(user_id, "✍️ Bronni tasdiqlash uchun ism va familiyangizni to'liq yozing\n(masalan: Aliyev Vali):")
+
+async def try_book_or_ask(region_id, field_id, date_str, time_str, user_id):
+    if time_str in get_booked_times(region_id, field_id, date_str):
+        return False
+    phone, full_name = get_user_info(user_id)
+    if phone and full_name:
+        await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, None, phone)
+    else:
+        await start_info_flow(user_id, (region_id, field_id, date_str, time_str))
+    return True
+
 @dp.message(CommandStart())
 async def start(message: Message):
+    STATE.pop(message.from_user.id, None)
     if len(REGIONS) == 1:
         region_id = list(REGIONS.keys())[0]
         await message.answer(
@@ -184,19 +208,74 @@ async def start(message: Message):
 @dp.message(F.contact)
 async def contact_received(message: Message):
     user_id = message.from_user.id
+    st = STATE.get(user_id)
+    if not st or st["step"] != "phone":
+        return
     if not message.contact or message.contact.user_id != user_id:
-        await message.answer("Iltimos, faqat o'z raqamingizni yuboring.", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Iltimos, faqat o'z raqamingizni yuboring.")
         return
     phone = message.contact.phone_number
-    save_user_phone(user_id, phone)
-    await message.answer("Rahmat! Raqamingiz saqlandi.", reply_markup=ReplyKeyboardRemove())
-    pending = PENDING.pop(user_id, None)
-    if pending:
-        region_id, field_id, date_str, time_str = pending
-        if time_str in get_booked_times(region_id, field_id, date_str):
-            await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring: /start")
+    full_name = st["name"]
+    region_id, field_id, date_str, time_str = st["pending"]
+    STATE.pop(user_id, None)
+    save_user_info(user_id, phone, full_name)
+    await message.answer("Rahmat!", reply_markup=ReplyKeyboardRemove())
+    if time_str in get_booked_times(region_id, field_id, date_str):
+        await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. /start orqali qaytadan urinib ko'ring.")
+        return
+    await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, message.from_user.username, phone)
+
+@dp.message(F.text, F.func(lambda m: m.from_user.id in STATE and not m.text.startswith("/")))
+async def info_flow_text(message: Message):
+    user_id = message.from_user.id
+    st = STATE[user_id]
+
+    if st["step"] == "name":
+        full_name = message.text.strip()
+        if len(full_name) < 3:
+            await message.answer("Iltimos, to'liq ism familiyangizni yozing.")
             return
-        await finalize_booking(region_id, field_id, date_str, time_str, user_id, message.from_user.first_name, message.from_user.username, phone)
+        st["name"] = full_name
+        existing_phone, _ = get_user_info(user_id)
+        region_id, field_id, date_str, time_str = st["pending"]
+        if existing_phone:
+            STATE.pop(user_id, None)
+            save_user_info(user_id, existing_phone, full_name)
+            if time_str in get_booked_times(region_id, field_id, date_str):
+                await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi. /start orqali qaytadan urinib ko'ring.")
+                return
+            await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, message.from_user.username, existing_phone)
+        else:
+            st["step"] = "phone"
+            await message.answer(
+                "📱 Endi ishlaydigan telefon raqamingizni yozing\n(masalan: +998901234567)\n\nyoki pastdagi tugma orqali ulashing:",
+                reply_markup=phone_request_keyboard()
+            )
+
+    elif st["step"] == "phone":
+        phone = message.text.strip()
+        digits = "".join(c for c in phone if c.isdigit())
+        if len(digits) < 7:
+            await message.answer("Iltimos, to'g'ri telefon raqam kiriting (masalan: +998901234567).")
+            return
+        full_name = st["name"]
+        region_id, field_id, date_str, time_str = st["pending"]
+        STATE.pop(user_id, None)
+        save_user_info(user_id, phone, full_name)
+        await message.answer("Rahmat!", reply_markup=ReplyKeyboardRemove())
+        if time_str in get_booked_times(region_id, field_id, date_str):
+            await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi. /start orqali qaytadan urinib ko'ring.")
+            return
+        await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, message.from_user.username, phone)
+
+@dp.message(F.web_app_data)
+async def web_app_booking(message: Message):
+    import json
+    data = json.loads(message.web_app_data.data)
+    region_id, field_id, date_str, time_str = data["region"], data["field"], data["date"], data["time"]
+    ok = await try_book_or_ask(region_id, field_id, date_str, time_str, message.from_user.id)
+    if not ok:
+        await message.answer("Kechirasiz, bu vaqt band bo'ldi. Qaytadan urinib ko'ring: /start")
 
 @dp.message(Command("stats"))
 async def stats_command(message: Message):
@@ -310,23 +389,17 @@ async def book_slot(callback: CallbackQuery):
     if time_str in get_booked_times(region_id, field_id, date_str):
         await callback.answer("Kechirasiz, bu vaqt band bo'ldi", show_alert=True)
         return
-    user_id = callback.from_user.id
-    phone = get_user_phone(user_id)
-    if phone:
-        await callback.answer()
-        await finalize_booking(region_id, field_id, date_str, time_str, user_id, callback.from_user.first_name, callback.from_user.username, phone)
+    await callback.answer()
+    phone, full_name = get_user_info(callback.from_user.id)
+    if phone and full_name:
+        await finalize_booking(region_id, field_id, date_str, time_str, callback.from_user.id, full_name, callback.from_user.username, phone)
         info = get_field_info(region_id, field_id)
         try:
             await callback.message.edit_text(f"✅ Bron qilindi!\n\n{info['emoji']} {info['name']}\n📅 {date_str}\n🕐 {time_str}")
         except TelegramBadRequest:
             pass
     else:
-        PENDING[user_id] = (region_id, field_id, date_str, time_str)
-        await callback.answer()
-        await callback.message.answer(
-            "📱 Bronni tasdiqlash uchun telefon raqamingizni yuboring.\n\nBu soxta bronlarning oldini olish uchun kerak, faqat bir marta so'raladi.",
-            reply_markup=phone_request_keyboard()
-        )
+        await start_info_flow(callback.from_user.id, (region_id, field_id, date_str, time_str))
 
 async def main():
     init_db()
