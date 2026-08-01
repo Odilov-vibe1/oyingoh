@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, WebAppInfo
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.exceptions import TelegramBadRequest
@@ -17,8 +17,6 @@ OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-MINI_APP_URL = "https://odilov-vibe1.github.io/oyingoh/"
-
 REGIONS = {
     "qishloq1": {
         "name": "QISHLOQ_NOMI",
@@ -29,7 +27,8 @@ REGIONS = {
     }
 }
 HOURS = [f"{h:02d}:00" for h in range(5, 23)]
-STATE = {}  # user_id -> {"step": "name"/"phone", "pending": (region,field,date,time), "name": str}
+STATE = {}        # mijoz uchun: ism/telefon so'rash
+ADMIN_STATE = {}  # admin uchun: qo'lda bron qo'shish
 
 def get_field_info(region_id, field_id):
     return REGIONS[region_id]["fields"][field_id]
@@ -43,12 +42,13 @@ async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
 
 def init_db():
     conn = sqlite3.connect("bookings.db")
-    conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT, phone TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, phone TEXT, full_name TEXT)")
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
-    except sqlite3.OperationalError:
-        pass
+    for stmt in ["ALTER TABLE bookings ADD COLUMN phone TEXT", "ALTER TABLE users ADD COLUMN full_name TEXT"]:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -56,9 +56,7 @@ def get_user_info(user_id):
     conn = sqlite3.connect("bookings.db")
     row = conn.execute("SELECT phone, full_name FROM users WHERE telegram_id=?", (user_id,)).fetchone()
     conn.close()
-    if not row:
-        return None, None
-    return row[0], row[1]
+    return (row[0], row[1]) if row else (None, None)
 
 def save_user_info(user_id, phone, full_name):
     conn = sqlite3.connect("bookings.db")
@@ -72,9 +70,9 @@ def get_booked_times(region, field, date):
     conn.close()
     return rows
 
-def add_booking(region, field, date, time, user_id, user_name):
+def add_booking(region, field, date, time, user_id, user_name, phone):
     conn = sqlite3.connect("bookings.db")
-    conn.execute("INSERT INTO bookings (region, field, date, time, user_id, user_name) VALUES (?,?,?,?,?,?)", (region, field, date, time, user_id, user_name))
+    conn.execute("INSERT INTO bookings (region, field, date, time, user_id, user_name, phone) VALUES (?,?,?,?,?,?,?)", (region, field, date, time, user_id, user_name, phone))
     conn.commit()
     conn.close()
 
@@ -82,9 +80,7 @@ def get_upcoming_bookings():
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect("bookings.db")
     rows = conn.execute(
-        "SELECT b.id, b.region, b.field, b.date, b.time, b.user_name, b.user_id, u.phone "
-        "FROM bookings b LEFT JOIN users u ON b.user_id = u.telegram_id "
-        "WHERE b.date>=? ORDER BY b.date, b.time", (today,)
+        "SELECT id, region, field, date, time, user_name, user_id, phone FROM bookings WHERE date>=? ORDER BY date, time", (today,)
     ).fetchall()
     conn.close()
     return rows
@@ -120,7 +116,6 @@ def region_menu():
 def field_menu(region_id):
     fields = REGIONS[region_id]["fields"]
     buttons = [[InlineKeyboardButton(text=f"{f['emoji']} {f['name']} — {f['price']} so'm", callback_data=f"field|{region_id}|{fid}")] for fid, f in fields.items()]
-    buttons.append([InlineKeyboardButton(text="🚀 Mini App orqali bron qilish", web_app=WebAppInfo(url=MINI_APP_URL))])
     buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_regions")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -139,20 +134,24 @@ def days_list(region_id, field_id):
     buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"field|{region_id}|{field_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def slots_menu(region_id, field_id, date_str):
+def slots_menu(region_id, field_id, date_str, prefix="book"):
     booked = get_booked_times(region_id, field_id, date_str)
+    now = datetime.now()
+    is_today = date_str == now.strftime("%Y-%m-%d")
     buttons, row = [], []
     for h in HOURS:
-        if h in booked:
+        is_past = is_today and int(h.split(":")[0]) <= now.hour
+        if h in booked or is_past:
             row.append(InlineKeyboardButton(text=f"🔴 {h}", callback_data="taken"))
         else:
-            row.append(InlineKeyboardButton(text=f"🟢 {h}", callback_data=f"book|{region_id}|{field_id}|{date_str}|{h}"))
+            row.append(InlineKeyboardButton(text=f"🟢 {h}", callback_data=f"{prefix}|{region_id}|{field_id}|{date_str}|{h}"))
         if len(row) == 3:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"field|{region_id}|{field_id}")])
+    back_cb = f"field|{region_id}|{field_id}" if prefix == "book" else f"aday|{region_id}|{field_id}"
+    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def phone_request_keyboard():
@@ -162,7 +161,7 @@ def phone_request_keyboard():
     )
 
 async def finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, username, phone):
-    add_booking(region_id, field_id, date_str, time_str, user_id, full_name)
+    add_booking(region_id, field_id, date_str, time_str, user_id, full_name, phone)
     info = get_field_info(region_id, field_id)
     await bot.send_message(
         user_id,
@@ -180,16 +179,6 @@ async def finalize_booking(region_id, field_id, date_str, time_str, user_id, ful
 async def start_info_flow(user_id, pending):
     STATE[user_id] = {"step": "name", "pending": pending}
     await bot.send_message(user_id, "✍️ Bronni tasdiqlash uchun ism va familiyangizni to'liq yozing\n(masalan: Aliyev Vali):")
-
-async def try_book_or_ask(region_id, field_id, date_str, time_str, user_id):
-    if time_str in get_booked_times(region_id, field_id, date_str):
-        return False
-    phone, full_name = get_user_info(user_id)
-    if phone and full_name:
-        await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, None, phone)
-    else:
-        await start_info_flow(user_id, (region_id, field_id, date_str, time_str))
-    return True
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -269,15 +258,6 @@ async def info_flow_text(message: Message):
             return
         await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, message.from_user.username, phone)
 
-@dp.message(F.web_app_data)
-async def web_app_booking(message: Message):
-    import json
-    data = json.loads(message.web_app_data.data)
-    region_id, field_id, date_str, time_str = data["region"], data["field"], data["date"], data["time"]
-    ok = await try_book_or_ask(region_id, field_id, date_str, time_str, message.from_user.id)
-    if not ok:
-        await message.answer("Kechirasiz, bu vaqt band bo'ldi. Qaytadan urinib ko'ring: /start")
-
 @dp.message(Command("stats"))
 async def stats_command(message: Message):
     if message.from_user.id != OWNER_ID:
@@ -302,9 +282,9 @@ async def admin_panel(message: Message):
         return
     rows = get_upcoming_bookings()
     if not rows:
-        await message.answer("📋 Hozircha aktiv bronlar yo'q.")
+        await message.answer("📋 Hozircha aktiv bronlar yo'q.\n\n➕ Qo'lda bron qo'shish uchun /add yozing.")
         return
-    await message.answer(f"📋 Jami {len(rows)} ta aktiv bron:")
+    await message.answer(f"📋 Jami {len(rows)} ta aktiv bron:\n\n➕ Qo'lda qo'shish uchun /add")
     for r in rows:
         booking_id, region_id, field_id, date, time, user_name, user_id, phone = r
         info = get_field_info(region_id, field_id)
@@ -332,13 +312,85 @@ async def cancel_booking(callback: CallbackQuery):
     delete_booking(booking_id)
     await callback.message.edit_text(f"❌ Bekor qilindi:\n{info['emoji']} {info['name']}\n📅 {date} 🕐 {time}\n👤 {user_name}")
     await callback.answer()
-    try:
-        await bot.send_message(
-            user_id,
-            f"⚠️ Kechirasiz, quyidagi broningiz bekor qilindi:\n\n{info['emoji']} {info['name']}\n📅 {date}\n🕐 {time}\n\nBoshqa vaqtni tanlash uchun /start bosing."
-        )
-    except Exception:
-        pass
+    if user_id:
+        try:
+            await bot.send_message(
+                user_id,
+                f"⚠️ Kechirasiz, quyidagi broningiz bekor qilindi:\n\n{info['emoji']} {info['name']}\n📅 {date}\n🕐 {time}\n\nBoshqa vaqtni tanlash uchun /start bosing."
+            )
+        except Exception:
+            pass
+
+# ============ ADMIN: QO'LDA BRON QO'SHISH ============
+@dp.message(Command("add"))
+async def admin_add_start(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    ADMIN_STATE[message.from_user.id] = {"step": "field"}
+    region_id = list(REGIONS.keys())[0]
+    buttons = [[InlineKeyboardButton(text=f"{f['emoji']} {f['name']}", callback_data=f"aset|{region_id}|{fid}")] for fid, f in REGIONS[region_id]["fields"].items()]
+    await message.answer("📞 Telefon orqali kelgan mijoz uchun bron qo'shish\n\nQaysi maydon?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("aset|"))
+async def admin_add_field(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    _, region_id, field_id = callback.data.split("|")
+    ADMIN_STATE[callback.from_user.id] = {"step": "day", "region": region_id, "field": field_id}
+    buttons = []
+    for i in range(7):
+        d = datetime.now() + timedelta(days=i)
+        buttons.append([InlineKeyboardButton(text=d.strftime("%d-%m-%Y") + (" (bugun)" if i == 0 else ""), callback_data=f"aday|{region_id}|{field_id}|{i}")])
+    await safe_edit(callback, "Qaysi kunga?", InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("aday|"))
+async def admin_add_day(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    parts = callback.data.split("|")
+    if len(parts) == 4:
+        _, region_id, field_id, offset = parts
+        date_str = (datetime.now() + timedelta(days=int(offset))).strftime("%Y-%m-%d")
+    else:
+        _, region_id, field_id = parts
+        st = ADMIN_STATE.get(callback.from_user.id, {})
+        date_str = st.get("date")
+    ADMIN_STATE[callback.from_user.id] = {"step": "time", "region": region_id, "field": field_id, "date": date_str}
+    await safe_edit(callback, f"🕐 {date_str}\nQaysi vaqt?", slots_menu(region_id, field_id, date_str, prefix="apick"))
+
+@dp.callback_query(F.data.startswith("apick|"))
+async def admin_add_time(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    _, region_id, field_id, date_str, time_str = callback.data.split("|")
+    if time_str in get_booked_times(region_id, field_id, date_str):
+        await callback.answer("Bu vaqt band", show_alert=True)
+        return
+    ADMIN_STATE[callback.from_user.id] = {"step": "name", "region": region_id, "field": field_id, "date": date_str, "time": time_str}
+    await callback.answer()
+    await callback.message.answer("✍️ Mijozning ism-familiyasini yozing:")
+
+@dp.message(F.text, F.func(lambda m: m.from_user.id == OWNER_ID and m.from_user.id in ADMIN_STATE and not m.text.startswith("/")))
+async def admin_add_text(message: Message):
+    st = ADMIN_STATE[message.from_user.id]
+    if st["step"] == "name":
+        st["name"] = message.text.strip()
+        st["step"] = "phone"
+        await message.answer("📞 Mijozning telefon raqamini yozing:")
+    elif st["step"] == "phone":
+        phone = message.text.strip()
+        region_id, field_id, date_str, time_str = st["region"], st["field"], st["date"], st["time"]
+        if time_str in get_booked_times(region_id, field_id, date_str):
+            await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi.")
+            ADMIN_STATE.pop(message.from_user.id, None)
+            return
+        add_booking(region_id, field_id, date_str, time_str, 0, st["name"], phone)
+        info = get_field_info(region_id, field_id)
+        ADMIN_STATE.pop(message.from_user.id, None)
+        await message.answer(f"✅ Qo'lda bron qo'shildi!\n\n{info['emoji']} {info['name']}\n📅 {date_str}  🕐 {time_str}\n👤 {st['name']}\n📞 {phone}")
 
 @dp.callback_query(F.data == "back_regions")
 async def back_regions(callback: CallbackQuery):
@@ -376,13 +428,13 @@ async def show_slots(callback: CallbackQuery):
     label = date_obj.strftime("%d-%m-%Y")
     await safe_edit(
         callback,
-        f"🕐 {label}\n\n🟢 bo'sh  🔴 band\nVaqtni tanlang:",
+        f"🕐 {label}\n\n🟢 bo'sh  🔴 band/o'tgan\nVaqtni tanlang:",
         slots_menu(region_id, field_id, date_str)
     )
 
 @dp.callback_query(F.data == "taken")
 async def taken(callback: CallbackQuery):
-    await callback.answer("Bu vaqt band, boshqasini tanlang", show_alert=True)
+    await callback.answer("Bu vaqt band yoki o'tib ketgan", show_alert=True)
 
 @dp.callback_query(F.data.startswith("book|"))
 async def book_slot(callback: CallbackQuery):
@@ -402,6 +454,7 @@ async def book_slot(callback: CallbackQuery):
     else:
         await start_info_flow(callback.from_user.id, (region_id, field_id, date_str, time_str))
 
+# ============ HEALTH + API (kelajakda kerak bolishi mumkin) ============
 async def handle_health(request):
     return web.Response(text="O'yingoh bot ishlayapti")
 
@@ -453,4 +506,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
