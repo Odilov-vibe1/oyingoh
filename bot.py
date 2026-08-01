@@ -9,6 +9,7 @@ from aiogram.types import (
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.exceptions import TelegramBadRequest
+from aiohttp import web
 
 TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
@@ -401,9 +402,55 @@ async def book_slot(callback: CallbackQuery):
     else:
         await start_info_flow(callback.from_user.id, (region_id, field_id, date_str, time_str))
 
+async def handle_health(request):
+    return web.Response(text="O'yingoh bot ishlayapti")
+
+async def handle_slots(request):
+    region = request.query.get("region")
+    field = request.query.get("field")
+    date_str = request.query.get("date")
+    if not (region and field and date_str):
+        return web.json_response({"error": "missing params"}, status=400)
+    booked = set(get_booked_times(region, field, date_str))
+    now = datetime.now()
+    is_today = date_str == now.strftime("%Y-%m-%d")
+    result = []
+    for h in HOURS:
+        status = "free"
+        if h in booked:
+            status = "booked"
+        elif is_today and int(h.split(":")[0]) <= now.hour:
+            status = "past"
+        result.append({"time": h, "status": status})
+    return web.json_response({"slots": result})
+
+@web.middleware
+async def cors_middleware(request, handler):
+    if request.method == "OPTIONS":
+        resp = web.Response()
+    else:
+        resp = await handler(request)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return resp
+
+async def start_web_app():
+    app = web.Application(middlewares=[cors_middleware])
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/api/slots", handle_slots)
+    app.router.add_route("OPTIONS", "/api/slots", handle_health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 async def main():
     init_db()
+    await start_web_app()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
