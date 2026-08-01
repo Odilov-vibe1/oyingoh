@@ -126,6 +126,7 @@
   }
   .slot:active { transform: scale(0.96); }
   .slot.taken { background: #FBEAEA; color: #C94C4C; border-color: #F3D3D3; cursor: not-allowed; }
+  .loading-msg { grid-column: 1/-1; text-align: center; color: var(--muted); padding: 24px 0; font-size: 13px; }
 
   .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
@@ -172,13 +173,12 @@ const tg = window.Telegram.WebApp;
 tg.ready();
 tg.expand();
 
+const API_URL = "https://oyingoh-olfr.onrender.com";
 const REGION = { id: "qishloq1", name: "QISHLOQ_NOMI" };
 const FIELDS = {
   futbol: { name: "Mini Futbol", price: "140,000", icon: "⚽", location: "19-maktab yonida" },
   voleybol: { name: "Voleybol", price: "60,000", icon: "🏐", location: "19-maktab yonida" }
 };
-const HOURS = [];
-for (let h = 5; h <= 22; h++) HOURS.push(String(h).padStart(2,"0") + ":00");
 
 let state = { field: null, date: null, time: null };
 const app = document.getElementById("app");
@@ -238,18 +238,33 @@ function selectDay(iso) {
   slotsScreen();
 }
 
-function slotsScreen() {
-  const f = FIELDS[state.field];
-  let html = `<div class="back-link" onclick="dayScreen()">‹ Orqaga</div>
+async function slotsScreen() {
+  app.innerHTML = `<div class="back-link" onclick="dayScreen()">‹ Orqaga</div>
   <div class="section-label">${state.date}</div>
-  <div class="legend"><span><i class="dot green"></i>Bo'sh</span><span><i class="dot red"></i>Band</span></div>
-  <div class="slots-grid">`;
-  HOURS.forEach(h => {
-    html += `<div class="slot" onclick="selectTime('${h}')">${h}</div>`;
-  });
-  html += `</div>`;
-  app.innerHTML = html;
+  <div class="legend"><span><i class="dot green"></i>Bo'sh</span><span><i class="dot red"></i>Band/o'tgan</span></div>
+  <div class="slots-grid" id="slotsGrid"><div class="loading-msg">Yuklanmoqda...</div></div>`;
   tg.MainButton.hide();
+  try {
+    const res = await fetch(`${API_URL}/api/slots?region=${REGION.id}&field=${state.field}&date=${state.date}`);
+    const data = await res.json();
+    renderSlots(data.slots);
+  } catch (e) {
+    document.getElementById("slotsGrid").innerHTML = `<div class="loading-msg">Yuklab bo'lmadi, qaytadan urinib ko'ring</div>`;
+  }
+}
+
+function renderSlots(slots) {
+  const grid = document.getElementById("slotsGrid");
+  grid.innerHTML = "";
+  slots.forEach(s => {
+    const div = document.createElement("div");
+    div.className = "slot" + (s.status !== "free" ? " taken" : "");
+    div.textContent = s.time;
+    if (s.status === "free") {
+      div.onclick = () => selectTime(s.time);
+    }
+    grid.appendChild(div);
+  });
 }
 
 function selectTime(h) {
