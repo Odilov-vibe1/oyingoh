@@ -209,7 +209,7 @@ async def contact_received(message: Message):
     if not st or st["step"] != "phone":
         return
     if not message.contact or message.contact.user_id != user_id:
-        await message.answer("Iltimos, faqat o'z raqamingizni yuboring.")
+        await message.answer("⚠️⚠️⚠️Iltimos, faqat o'z raqamingizni yuboring.Adminlar siz bilan bog'lanishlari kerak, aks holda bron bekor qilinadi!")
         return
     phone = message.contact.phone_number
     full_name = st["name"]
