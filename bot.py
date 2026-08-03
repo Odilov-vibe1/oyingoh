@@ -17,6 +17,8 @@ OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+DB_PATH = "/data/bookings.db"
+
 TASHKENT = timezone(timedelta(hours=5))
 
 def now_tj():
@@ -51,8 +53,14 @@ def admin_menu_keyboard():
         [KeyboardButton(text="📊 Statistika")]
     ], resize_keyboard=True)
 
+def customer_menu_keyboard():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="⚽ Bron qilish")],
+        [KeyboardButton(text="📋 Mening bronlarim")]
+    ], resize_keyboard=True)
+
 def init_db():
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT, phone TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, phone TEXT, full_name TEXT)")
     for stmt in ["ALTER TABLE bookings ADD COLUMN phone TEXT", "ALTER TABLE users ADD COLUMN full_name TEXT"]:
@@ -64,52 +72,61 @@ def init_db():
     conn.close()
 
 def get_user_info(user_id):
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT phone, full_name FROM users WHERE telegram_id=?", (user_id,)).fetchone()
     conn.close()
     return (row[0], row[1]) if row else (None, None)
 
 def save_user_info(user_id, phone, full_name):
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("INSERT OR REPLACE INTO users (telegram_id, phone, full_name) VALUES (?,?,?)", (user_id, phone, full_name))
     conn.commit()
     conn.close()
 
 def get_booked_times(region, field, date):
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     rows = [r[0] for r in conn.execute("SELECT time FROM bookings WHERE region=? AND field=? AND date=?", (region, field, date)).fetchall()]
     conn.close()
     return rows
 
 def add_booking(region, field, date, time, user_id, user_name, phone):
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("INSERT INTO bookings (region, field, date, time, user_id, user_name, phone) VALUES (?,?,?,?,?,?,?)", (region, field, date, time, user_id, user_name, phone))
     conn.commit()
     conn.close()
 
 def get_upcoming_bookings():
     today = now_tj().strftime("%Y-%m-%d")
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
         "SELECT id, region, field, date, time, user_name, user_id, phone FROM bookings WHERE date>=? ORDER BY date, time", (today,)
     ).fetchall()
     conn.close()
     return rows
 
+def get_user_bookings(user_id):
+    today = now_tj().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT id, region, field, date, time FROM bookings WHERE user_id=? AND date>=? ORDER BY date, time", (user_id, today)
+    ).fetchall()
+    conn.close()
+    return rows
+
 def get_booking(booking_id):
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT region, field, date, time, user_id, user_name FROM bookings WHERE id=?", (booking_id,)).fetchone()
     conn.close()
     return row
 
 def delete_booking(booking_id):
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
     conn.commit()
     conn.close()
 
 def get_stats():
-    conn = sqlite3.connect("/data/bookings.db")
+    conn = sqlite3.connect(DB_PATH)
     total = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
     today = now_tj().strftime("%Y-%m-%d")
     week_end = (now_tj() + timedelta(days=7)).strftime("%Y-%m-%d")
@@ -200,17 +217,62 @@ async def start(message: Message):
     if message.from_user.id == OWNER_ID:
         await message.answer("👨‍💼 Admin panelga xush kelibsiz!\n\nQuyidagi tugmalardan foydalaning:", reply_markup=admin_menu_keyboard())
         return
+    await message.answer(
+        f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!",
+        reply_markup=customer_menu_keyboard()
+    )
+
+@dp.message(F.text == "⚽ Bron qilish")
+async def btn_book(message: Message):
+    if message.from_user.id == OWNER_ID:
+        return
+    STATE.pop(message.from_user.id, None)
     if len(REGIONS) == 1:
         region_id = list(REGIONS.keys())[0]
-        await message.answer(
-            f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!\n📍 {REGIONS[region_id]['name']}\n\nQaysi maydonni tanlaysiz?",
-            reply_markup=field_menu(region_id)
-        )
+        await message.answer(f"📍 {REGIONS[region_id]['name']}\n\nQaysi maydonni tanlaysiz?", reply_markup=field_menu(region_id))
     else:
-        await message.answer(
-            f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!\n\nHududni tanlang:",
-            reply_markup=region_menu()
-        )
+        await message.answer("Hududni tanlang:", reply_markup=region_menu())
+
+@dp.message(F.text == "📋 Mening bronlarim")
+async def btn_my_bookings(message: Message):
+    if message.from_user.id == OWNER_ID:
+        return
+    rows = get_user_bookings(message.from_user.id)
+    if not rows:
+        await message.answer("📋 Sizda hozircha aktiv bron yo'q.\n\nBron qilish uchun \"⚽ Bron qilish\" tugmasini bosing.")
+        return
+    await message.answer(f"📋 Sizning aktiv bronlaringiz ({len(rows)} ta):")
+    for r in rows:
+        booking_id, region_id, field_id, date, time = r
+        info = get_field_info(region_id, field_id)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"mycancel|{booking_id}")]
+        ])
+        await message.answer(f"{info['emoji']} {info['name']}\n📅 {date}  🕐 {time}", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("mycancel|"))
+async def my_cancel_booking(callback: CallbackQuery):
+    booking_id = int(callback.data.split("|")[1])
+    booking = get_booking(booking_id)
+    if not booking:
+        await callback.answer("Bu bron allaqachon bekor qilingan", show_alert=True)
+        return
+    region_id, field_id, date, time, user_id, user_name = booking
+    if callback.from_user.id != user_id:
+        await callback.answer("Bu sizning broningiz emas", show_alert=True)
+        return
+    info = get_field_info(region_id, field_id)
+    delete_booking(booking_id)
+    await callback.message.edit_text(f"❌ Bron bekor qilindi:\n{info['emoji']} {info['name']}\n📅 {date} 🕐 {time}")
+    await callback.answer()
+    if OWNER_ID:
+        try:
+            await bot.send_message(
+                OWNER_ID,
+                f"⚠️ Mijoz bronni bekor qildi:\n\n{info['emoji']} {info['name']}\n📅 {date}  🕐 {time}\n👤 {user_name}"
+            )
+        except Exception:
+            pass
 
 @dp.message(Command("stats"))
 async def stats_command(message: Message):
@@ -260,7 +322,6 @@ async def admin_add_start(message: Message):
     buttons = [[InlineKeyboardButton(text=f"{f['emoji']} {f['name']}", callback_data=f"aset|{region_id}|{fid}")] for fid, f in REGIONS[region_id]["fields"].items()]
     await message.answer("📞 Telefon orqali kelgan mijoz uchun bron qo'shish\n\nQaysi maydon?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-# ---- Doimiy tugmalar (persistent menu) ----
 @dp.message(F.text == "📋 Bronlar")
 async def btn_admin_panel(message: Message):
     if message.from_user.id != OWNER_ID:
@@ -295,9 +356,9 @@ async def contact_received(message: Message):
     region_id, field_id, date_str, time_str = st["pending"]
     STATE.pop(user_id, None)
     save_user_info(user_id, phone, full_name)
-    await message.answer("Rahmat!", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Rahmat!", reply_markup=customer_menu_keyboard())
     if time_str in get_booked_times(region_id, field_id, date_str):
-        await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. /start orqali qaytadan urinib ko'ring.")
+        await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring.")
         return
     await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, message.from_user.username, phone)
 
@@ -320,7 +381,7 @@ async def cancel_booking(callback: CallbackQuery):
         try:
             await bot.send_message(
                 user_id,
-                f"⚠️ Kechirasiz, quyidagi broningiz bekor qilindi:\n\n{info['emoji']} {info['name']}\n📅 {date}\n🕐 {time}\n\nBoshqa vaqtni tanlash uchun /start bosing."
+                f"⚠️ Kechirasiz, quyidagi broningiz bekor qilindi:\n\n{info['emoji']} {info['name']}\n📅 {date}\n🕐 {time}\n\nBoshqa vaqtni tanlash uchun \"⚽ Bron qilish\" tugmasini bosing."
             )
         except Exception:
             pass
@@ -403,7 +464,7 @@ async def info_flow_text(message: Message):
             STATE.pop(user_id, None)
             save_user_info(user_id, existing_phone, full_name)
             if time_str in get_booked_times(region_id, field_id, date_str):
-                await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi. /start orqali qaytadan urinib ko'ring.")
+                await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring.")
                 return
             await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, message.from_user.username, existing_phone)
         else:
@@ -423,9 +484,9 @@ async def info_flow_text(message: Message):
         region_id, field_id, date_str, time_str = st["pending"]
         STATE.pop(user_id, None)
         save_user_info(user_id, phone, full_name)
-        await message.answer("Rahmat!", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Rahmat!", reply_markup=customer_menu_keyboard())
         if time_str in get_booked_times(region_id, field_id, date_str):
-            await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi. /start orqali qaytadan urinib ko'ring.")
+            await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring.")
             return
         await finalize_booking(region_id, field_id, date_str, time_str, user_id, full_name, message.from_user.username, phone)
 
