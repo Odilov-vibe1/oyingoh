@@ -52,7 +52,7 @@ def admin_menu_keyboard():
     ], resize_keyboard=True)
 
 def init_db():
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT, phone TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, phone TEXT, full_name TEXT)")
     for stmt in ["ALTER TABLE bookings ADD COLUMN phone TEXT", "ALTER TABLE users ADD COLUMN full_name TEXT"]:
@@ -64,32 +64,32 @@ def init_db():
     conn.close()
 
 def get_user_info(user_id):
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     row = conn.execute("SELECT phone, full_name FROM users WHERE telegram_id=?", (user_id,)).fetchone()
     conn.close()
     return (row[0], row[1]) if row else (None, None)
 
 def save_user_info(user_id, phone, full_name):
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     conn.execute("INSERT OR REPLACE INTO users (telegram_id, phone, full_name) VALUES (?,?,?)", (user_id, phone, full_name))
     conn.commit()
     conn.close()
 
 def get_booked_times(region, field, date):
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     rows = [r[0] for r in conn.execute("SELECT time FROM bookings WHERE region=? AND field=? AND date=?", (region, field, date)).fetchall()]
     conn.close()
     return rows
 
 def add_booking(region, field, date, time, user_id, user_name, phone):
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     conn.execute("INSERT INTO bookings (region, field, date, time, user_id, user_name, phone) VALUES (?,?,?,?,?,?,?)", (region, field, date, time, user_id, user_name, phone))
     conn.commit()
     conn.close()
 
 def get_upcoming_bookings():
     today = now_tj().strftime("%Y-%m-%d")
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     rows = conn.execute(
         "SELECT id, region, field, date, time, user_name, user_id, phone FROM bookings WHERE date>=? ORDER BY date, time", (today,)
     ).fetchall()
@@ -97,19 +97,19 @@ def get_upcoming_bookings():
     return rows
 
 def get_booking(booking_id):
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     row = conn.execute("SELECT region, field, date, time, user_id, user_name FROM bookings WHERE id=?", (booking_id,)).fetchone()
     conn.close()
     return row
 
 def delete_booking(booking_id):
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     conn.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
     conn.commit()
     conn.close()
 
 def get_stats():
-    conn = sqlite3.connect("bookings.db")
+    conn = sqlite3.connect("/data/bookings.db")
     total = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
     today = now_tj().strftime("%Y-%m-%d")
     week_end = (now_tj() + timedelta(days=7)).strftime("%Y-%m-%d")
