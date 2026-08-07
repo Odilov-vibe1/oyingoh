@@ -27,17 +27,25 @@ HOURS = [f"{h:02d}:00" for h in range(5, 23)]
 STATE = {}
 ADMIN_STATE = {}
 NEWFIELD_STATE = {}
+ASSIGN_STATE = {}
 
-OFFER_TEXT = (
-    "📄 Hamkorlik shartlari (oferta)\n\n"
-    "1. O'yingoh — sport maydonlarini bron qilish uchun Telegram-bot xizmati.\n"
-    "2. Siz maydon haqida to'g'ri ma'lumot (narx, manzil, vaqt) berishga majbursiz.\n"
-    "3. Hozircha xizmat bepul. Kelajakda haq joriy etilsa, oldindan xabar beriladi.\n"
-    "4. Bot orqali kelgan bronlarni hurmat qiling.\n"
-    "5. Mijoz ismi/raqami faqat bog'lanish uchun ishlatiladi.\n"
-    "6. Istalgan vaqt hamkorlikni bekor qilishingiz mumkin.\n\n"
-    "Roziligingizni bildirish uchun pastga \"Roziman\" deb yozing:"
-)
+VILOYATLAR = {
+    "Qoraqalpog'iston Respublikasi": ["Nukus shahri","Amudaryo","Beruniy","Kegeyli","Qonliko'l","Qorao'zak","Qo'ng'irot","Mo'ynoq","Nukus tumani","Taxiatosh","Taxtako'pir","To'rtko'l","Xo'jayli","Chimboy","Sho'manoy","Ellikqal'a"],
+    "Andijon viloyati": ["Andijon shahri","Xonabod shahri","Andijon tumani","Asaka","Baliqchi","Bo'z","Buloqboshi","Jalaquduq","Izboskan","Qo'rg'ontepa","Marhamat","Oltinko'l","Paxtaobod","Ulug'nor","Xo'jaobod","Shahrixon"],
+    "Buxoro viloyati": ["Buxoro shahri","Kogon shahri","Buxoro tumani","Vobkent","Jondor","Kogon tumani","Olot","Peshku","Romitan","Shofirkon","Qorovulbozor","Qorako'l","G'ijduvon"],
+    "Jizzax viloyati": ["Jizzax shahri","Arnasoy","Baxmal","Do'stlik","Zarbdor","Zafarobod","Zomin","Mirzacho'l","Paxtakor","Forish","Sharof Rashidov","G'allaorol","Yangiobod"],
+    "Qashqadaryo viloyati": ["Qarshi shahri","Shahrisabz shahri","Dehqonobod","Kasbi","Kitob","Koson","Mirishkor","Muborak","Nishon","Chiroqchi","Shahrisabz tumani","Yakkabog'","Qamashi","Qarshi tumani","G'uzor"],
+    "Navoiy viloyati": ["Navoiy shahri","Zarafshon shahri","Karmana","Konimex","Navbahor","Nurota","Tomdi","Uchquduq","Xatirchi","Qiziltepa"],
+    "Namangan viloyati": ["Namangan shahri","Kosonsoy","Mingbuloq","Namangan tumani","Norin","Pop","To'raqo'rg'on","Uychi","Uchqo'rg'on","Chortoq","Chust","Yangiqo'rg'on"],
+    "Samarqand viloyati": ["Samarqand shahri","Kattaqo'rg'on shahri","Bulung'ur","Jomboy","Ishtixon","Kattaqo'rg'on tumani","Narpay","Nurobod","Oqdaryo","Payariq","Pastdarg'om","Paxtachi","Samarqand tumani","Toyloq","Urgut","Qo'shrabot"],
+    "Surxondaryo viloyati": ["Termiz shahri","Angor","Boysun","Denov","Jarqo'rg'on","Muzrobod","Oltinsoy","Sariosiyo","Termiz tumani","Uzun","Sherobod","Sho'rchi","Qiziriq","Qumqo'rg'on","Bandixon"],
+    "Sirdaryo viloyati": ["Guliston shahri","Yangiyer shahri","Shirin shahri","Boyovut","Guliston tumani","Mirzaobod","Oqoltin","Sardoba","Sayxunobod","Sirdaryo tumani","Xovos"],
+    "Toshkent viloyati": ["Nurafshon shahri","Angren shahri","Bekobod shahri","Olmaliq shahri","Ohangaron shahri","Chirchiq shahri","Yangiyo'l shahri","Bekobod tumani","Bo'ka","Bo'stonliq","Zangiota","Qibray","Quyichirchiq","Oqqo'rg'on","Ohangaron tumani","Parkent","Piskent","Toshkent tumani","O'rtachirchiq","Chinoz","Yuqorichirchiq","Yangiyo'l tumani"],
+    "Farg'ona viloyati": ["Farg'ona shahri","Marg'ilon shahri","Quvasoy shahri","Qo'qon shahri","Beshariq","Bog'dod","Buvayda","Dang'ara","Yozyovon","Quva","Qo'shtepa","Oltiariq","Rishton","So'x","Toshloq","O'zbekiston","Uchko'prik","Farg'ona tumani","Furqat"],
+    "Xorazm viloyati": ["Urganch shahri","Xiva shahri","Bog'ot","Gurlan","Urganch tumani","Xiva tumani","Xonqa","Hazorasp","Shovot","Yangiariq","Yangibozor","Qo'shko'pir","Tuproqqal'a"],
+    "Toshkent shahri": ["Bektemir","Mirzo Ulug'bek","Mirobod","Olmazor","Sirg'ali","Uchtepa","Chilonzor","Shayxontohur","Yunusobod","Yakkasaroy","Yashnobod","Yangihayot"],
+}
+VILOYAT_LIST = list(VILOYATLAR.keys())
 
 def db():
     return sqlite3.connect(DB_PATH)
@@ -52,7 +60,7 @@ async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
 def admin_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📋 Bronlar"), KeyboardButton(text="➕ Bron qo'shish")],
-        [KeyboardButton(text="📊 Statistika")]
+        [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🧑‍💼 Admin tayinlash")]
     ], resize_keyboard=True)
 
 def customer_menu_keyboard():
@@ -61,6 +69,41 @@ def customer_menu_keyboard():
         [KeyboardButton(text="📋 Mening bronlarim")],
         [KeyboardButton(text="🏟 Gazon egasiman")]
     ], resize_keyboard=True)
+
+def viloyat_keyboard():
+    buttons, row = [], []
+    for i, v in enumerate(VILOYAT_LIST):
+        row.append(InlineKeyboardButton(text=v, callback_data=f"geov|{i}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def tuman_keyboard(vidx):
+    tumanlar = VILOYATLAR[VILOYAT_LIST[vidx]]
+    buttons, row = [], []
+    for i, t in enumerate(tumanlar):
+        row.append(InlineKeyboardButton(text=t, callback_data=f"geot|{vidx}|{i}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="geoback")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+OFFER_TEXT = (
+    "📄 Hamkorlik shartlari (oferta)\n\n"
+    "1. O'yingoh — sport maydonlarini bron qilish uchun Telegram-bot xizmati.\n"
+    "2. Siz maydon haqida to'g'ri ma'lumot (narx, manzil, vaqt) berishga majbursiz.\n"
+    "3. Hozircha xizmat bepul. Kelajakda haq joriy etilsa, oldindan xabar beriladi.\n"
+    "4. Bot orqali kelgan bronlarni hurmat qiling.\n"
+    "5. Mijoz ismi/raqami faqat bog'lanish uchun ishlatiladi.\n"
+    "6. Istalgan vaqt hamkorlikni bekor qilishingiz mumkin.\n\n"
+    "Roziligingizni bildirish uchun pastga \"Roziman\" deb yozing:"
+)
 
 def init_db():
     conn = db()
@@ -80,9 +123,9 @@ def init_db():
     existing = conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0]
     if existing == 0:
         conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
-                     ("futbol", "QISHLOQ_NOMI", "Mini Futbol", "140,000", "⚽", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
+                     ("futbol", "Beshariq tumani, Farg'ona viloyati", "Mini Futbol", "140,000", "⚽", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
         conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
-                     ("voleybol", "QISHLOQ_NOMI", "Voleybol", "60,000", "🏐", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
+                     ("voleybol", "Beshariq tumani, Farg'ona viloyati", "Voleybol", "60,000", "🏐", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
     conn.commit()
     conn.close()
 
@@ -260,8 +303,9 @@ async def start(message: Message):
     STATE.pop(message.from_user.id, None)
     ADMIN_STATE.pop(message.from_user.id, None)
     NEWFIELD_STATE.pop(message.from_user.id, None)
+    ASSIGN_STATE.pop(message.from_user.id, None)
     if message.from_user.id == OWNER_ID:
-        await message.answer("👨‍💼 Admin panelga xush kelibsiz!\n\nQuyidagi tugmalardan foydalaning:", reply_markup=admin_menu_keyboard())
+        await message.answer("👨‍💼 Bosh menejer paneliga xush kelibsiz!\n\nQuyidagi tugmalardan foydalaning:", reply_markup=admin_menu_keyboard())
         return
     await message.answer(
         f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!",
@@ -301,14 +345,52 @@ async def btn_my_bookings(message: Message):
 
 @dp.message(F.text == "🏟 Gazon egasiman")
 async def btn_add_field(message: Message):
-    NEWFIELD_STATE[message.from_user.id] = {"step": "region"}
-    await message.answer("🏟 Yangi maydon qo'shish\n\nHududingiz nomini yozing (masalan: Yakkabog'):")
+    NEWFIELD_STATE[message.from_user.id] = {"step": "viloyat"}
+    await message.answer("🏟 Yangi maydon qo'shish\n\nViloyatni tanlang:", reply_markup=viloyat_keyboard())
+
+@dp.callback_query(F.data.startswith("geov|"))
+async def geo_viloyat(callback: CallbackQuery):
+    if callback.from_user.id not in NEWFIELD_STATE:
+        await callback.answer()
+        return
+    vidx = int(callback.data.split("|")[1])
+    viloyat = VILOYAT_LIST[vidx]
+    NEWFIELD_STATE[callback.from_user.id]["viloyat"] = viloyat
+    NEWFIELD_STATE[callback.from_user.id]["step"] = "tuman"
+    await safe_edit(callback, f"📍 {viloyat}\n\nTumanni tanlang:", tuman_keyboard(vidx))
+
+@dp.callback_query(F.data == "geoback")
+async def geo_back(callback: CallbackQuery):
+    if callback.from_user.id not in NEWFIELD_STATE:
+        await callback.answer()
+        return
+    NEWFIELD_STATE[callback.from_user.id]["step"] = "viloyat"
+    await safe_edit(callback, "Viloyatni tanlang:", viloyat_keyboard())
+
+@dp.callback_query(F.data.startswith("geot|"))
+async def geo_tuman(callback: CallbackQuery):
+    if callback.from_user.id not in NEWFIELD_STATE:
+        await callback.answer()
+        return
+    _, vidx, tidx = callback.data.split("|")
+    viloyat = VILOYAT_LIST[int(vidx)]
+    tuman = VILOYATLAR[viloyat][int(tidx)]
+    st = NEWFIELD_STATE[callback.from_user.id]
+    st["viloyat"] = viloyat
+    st["tuman"] = tuman
+    st["region"] = f"{tuman}, {viloyat}"
+    st["step"] = "location"
+    try:
+        await callback.message.edit_text(f"📍 {tuman}, {viloyat}\n\nQishloq/mahalla va aniq manzilni yozing\n(masalan: Guliston MFY, markaziy maydon yonida):")
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
 
 @dp.message(F.text, F.func(lambda m: m.from_user.id in NEWFIELD_STATE and not m.text.startswith("/")))
 async def newfield_flow(message: Message):
     st = NEWFIELD_STATE[message.from_user.id]
-    if st["step"] == "region":
-        st["region"] = message.text.strip()
+    if st["step"] == "location":
+        st["location"] = message.text.strip()
         st["step"] = "name"
         await message.answer("Maydon nomini yozing (masalan: Katta Futbol Maydoni):")
     elif st["step"] == "name":
@@ -321,10 +403,6 @@ async def newfield_flow(message: Message):
             await message.answer("Iltimos, narxni raqamda yozing.")
             return
         st["price"] = f"{int(digits):,}".replace(",", " ")
-        st["step"] = "location"
-        await message.answer("Maydon manzilini yozing (masalan: Markaziy maydon yonida):")
-    elif st["step"] == "location":
-        st["location"] = message.text.strip()
         st["step"] = "phone"
         await message.answer(
             "📞 Siz bilan bog'lanish uchun telefon raqamingizni yozing\n(masalan: +998901234567)\n\nyoki pastdagi tugma orqali ulashing:",
@@ -360,7 +438,7 @@ async def newfield_flow(message: Message):
             try:
                 await bot.send_message(
                     OWNER_ID,
-                    f"🆕 Yangi maydon so'rovi:\n\n📍 {st['region']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📌 {st['location']}\n📞 Egasi raqami: {st['phone']}\n👤 @{message.from_user.username or message.from_user.first_name}\n\n⚠️ Tasdiqlashdan oldin raqamiga qo'ng'iroq qilib tekshiring!",
+                    f"🆕 Yangi maydon so'rovi:\n\n📍 {st['region']}\n📌 {st['location']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📞 Egasi raqami: {st['phone']}\n👤 @{message.from_user.username or message.from_user.first_name}\n\n⚠️ Tasdiqlashdan oldin raqamiga qo'ng'iroq qilib tekshiring!",
                     reply_markup=kb
                 )
             except Exception:
@@ -499,25 +577,44 @@ async def admin_add_start(message: Message):
     buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]}", callback_data=f"aset|{f[0]}")] for f in fields]
     await message.answer("📞 Telefon orqali kelgan mijoz uchun bron qo'shish\n\nQaysi maydon?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@dp.message(F.text == "📋 Bronlar")
-async def btn_admin_panel(message: Message):
+@dp.message(F.text == "🧑‍💼 Admin tayinlash")
+async def btn_assign_admin(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    ADMIN_STATE.pop(message.from_user.id, None)
-    await admin_panel(message)
+    fields = get_approved_fields()
+    if not fields:
+        await message.answer("Hozircha tasdiqlangan maydon yo'q.")
+        return
+    buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]} ({f[1]})", callback_data=f"assignf|{f[0]}")] for f in fields]
+    await message.answer("Qaysi maydonga admin tayinlaysiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@dp.message(F.text == "➕ Bron qo'shish")
-async def btn_admin_add(message: Message):
-    if message.from_user.id != OWNER_ID:
+@dp.callback_query(F.data.startswith("assignf|"))
+async def assign_pick_field(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("Ruxsat yo'q", show_alert=True)
         return
-    await admin_add_start(message)
+    field_id = callback.data.split("|")[1]
+    ASSIGN_STATE[callback.from_user.id] = {"field": field_id}
+    await safe_edit(callback, "Endi shu odamning istalgan xabarini menga FORWARD qiling.\n\n(U avval botga /start yozgan bo'lishi shart)")
 
-@dp.message(F.text == "📊 Statistika")
-async def btn_stats(message: Message):
-    if message.from_user.id != OWNER_ID:
+@dp.message(F.func(lambda m: m.from_user.id == OWNER_ID and m.from_user.id in ASSIGN_STATE and (m.forward_from or m.forward_sender_name)))
+async def assign_receive_forward(message: Message):
+    st = ASSIGN_STATE.pop(message.from_user.id)
+    field_id = st["field"]
+    if not message.forward_from:
+        await message.answer("Kechirasiz, bu odamning maxfiylik sozlamalari ID'ni yashiryapti.\n\n@userinfobot orqali uning ID raqamini oling va menga yuboring.")
         return
-    ADMIN_STATE.pop(message.from_user.id, None)
-    await stats_command(message)
+    new_admin_id = message.forward_from.id
+    conn = db()
+    conn.execute("UPDATE fields SET owner_id=? WHERE id=?", (new_admin_id, field_id))
+    conn.commit()
+    conn.close()
+    f = get_field(field_id)
+    await message.answer(f"✅ \"{f[2]}\" maydoniga yangi admin tayinlandi.", reply_markup=admin_menu_keyboard())
+    try:
+        await bot.send_message(new_admin_id, f"👨‍💼 Sizga \"{f[2]}\" maydoni bo'yicha admin huquqi berildi.\n\nEndi shu maydonga tushgan yangi bronlar haqida sizga avtomatik xabar keladi.")
+    except Exception:
+        pass
 
 @dp.callback_query(F.data.startswith("cancel|"))
 async def cancel_booking(callback: CallbackQuery):
