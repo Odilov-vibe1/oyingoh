@@ -28,6 +28,17 @@ STATE = {}
 ADMIN_STATE = {}
 NEWFIELD_STATE = {}
 
+OFFER_TEXT = (
+    "📄 Hamkorlik shartlari (oferta)\n\n"
+    "1. O'yingoh — sport maydonlarini bron qilish uchun Telegram-bot xizmati.\n"
+    "2. Siz maydon haqida to'g'ri ma'lumot (narx, manzil, vaqt) berishga majbursiz.\n"
+    "3. Hozircha xizmat bepul. Kelajakda haq joriy etilsa, oldindan xabar beriladi.\n"
+    "4. Bot orqali kelgan bronlarni hurmat qiling.\n"
+    "5. Mijoz ismi/raqami faqat bog'lanish uchun ishlatiladi.\n"
+    "6. Istalgan vaqt hamkorlikni bekor qilishingiz mumkin.\n\n"
+    "Roziligingizni bildirish uchun pastga \"Roziman\" deb yozing:"
+)
+
 def db():
     return sqlite3.connect(DB_PATH)
 
@@ -56,23 +67,28 @@ def init_db():
     conn.execute("CREATE TABLE IF NOT EXISTS bookings (id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, field TEXT, date TEXT, time TEXT, user_id INTEGER, user_name TEXT, phone TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, phone TEXT, full_name TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS fields (id TEXT PRIMARY KEY, region TEXT, name TEXT, price TEXT, emoji TEXT, location TEXT, owner_id INTEGER, status TEXT DEFAULT 'pending')")
-    for stmt in ["ALTER TABLE bookings ADD COLUMN phone TEXT", "ALTER TABLE users ADD COLUMN full_name TEXT"]:
+    for stmt in [
+        "ALTER TABLE bookings ADD COLUMN phone TEXT",
+        "ALTER TABLE users ADD COLUMN full_name TEXT",
+        "ALTER TABLE fields ADD COLUMN owner_phone TEXT",
+        "ALTER TABLE fields ADD COLUMN offer_accepted TEXT",
+    ]:
         try:
             conn.execute(stmt)
         except sqlite3.OperationalError:
             pass
     existing = conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0]
     if existing == 0:
-        conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status) VALUES (?,?,?,?,?,?,?,?)",
-                     ("futbol", "QISHLOQ_NOMI", "Mini Futbol", "140,000", "⚽", "19-maktab yonida", OWNER_ID, "approved"))
-        conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status) VALUES (?,?,?,?,?,?,?,?)",
-                     ("voleybol", "QISHLOQ_NOMI", "Voleybol", "60,000", "🏐", "19-maktab yonida", OWNER_ID, "approved"))
+        conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
+                     ("futbol", "QISHLOQ_NOMI", "Mini Futbol", "140,000", "⚽", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
+        conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
+                     ("voleybol", "QISHLOQ_NOMI", "Voleybol", "60,000", "🏐", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
     conn.commit()
     conn.close()
 
 def get_field(field_id):
     conn = db()
-    row = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status FROM fields WHERE id=?", (field_id,)).fetchone()
+    row = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status,owner_phone FROM fields WHERE id=?", (field_id,)).fetchone()
     conn.close()
     return row
 
@@ -309,16 +325,33 @@ async def newfield_flow(message: Message):
         await message.answer("Maydon manzilini yozing (masalan: Markaziy maydon yonida):")
     elif st["step"] == "location":
         st["location"] = message.text.strip()
+        st["step"] = "phone"
+        await message.answer(
+            "📞 Siz bilan bog'lanish uchun telefon raqamingizni yozing\n(masalan: +998901234567)\n\nyoki pastdagi tugma orqali ulashing:",
+            reply_markup=phone_request_keyboard()
+        )
+    elif st["step"] == "phone":
+        digits = "".join(c for c in message.text if c.isdigit())
+        if len(digits) < 7:
+            await message.answer("Iltimos, to'g'ri telefon raqam kiriting.")
+            return
+        st["phone"] = message.text.strip()
+        st["step"] = "offer"
+        await message.answer(OFFER_TEXT, reply_markup=ReplyKeyboardRemove())
+    elif st["step"] == "offer":
+        if message.text.strip().lower() != "roziman":
+            await message.answer("Davom etish uchun aniq \"Roziman\" deb yozing.")
+            return
         field_id = f"f{int(datetime.now().timestamp())}"
         conn = db()
         conn.execute(
-            "INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status) VALUES (?,?,?,?,?,?,?,?)",
-            (field_id, st["region"], st["name"], st["price"], "🏟", st["location"], message.from_user.id, "pending")
+            "INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,owner_phone,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (field_id, st["region"], st["name"], st["price"], "🏟", st["location"], message.from_user.id, "pending", st["phone"], now_tj().strftime("%Y-%m-%d %H:%M"))
         )
         conn.commit()
         conn.close()
         NEWFIELD_STATE.pop(message.from_user.id, None)
-        await message.answer("✅ Arizangiz yuborildi! Admin tasdiqlagach, maydoningiz botda ko'rinadi.", reply_markup=customer_menu_keyboard())
+        await message.answer("✅ Arizangiz yuborildi! Tez orada siz bilan bog'lanib, ma'lumotlarni tasdiqlaymiz.", reply_markup=customer_menu_keyboard())
         if OWNER_ID:
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"fapprove|{field_id}"),
@@ -327,11 +360,39 @@ async def newfield_flow(message: Message):
             try:
                 await bot.send_message(
                     OWNER_ID,
-                    f"🆕 Yangi maydon so'rovi:\n\n📍 {st['region']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📌 {st['location']}\n👤 @{message.from_user.username or message.from_user.first_name}",
+                    f"🆕 Yangi maydon so'rovi:\n\n📍 {st['region']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📌 {st['location']}\n📞 Egasi raqami: {st['phone']}\n👤 @{message.from_user.username or message.from_user.first_name}\n\n⚠️ Tasdiqlashdan oldin raqamiga qo'ng'iroq qilib tekshiring!",
                     reply_markup=kb
                 )
             except Exception:
                 pass
+
+@dp.message(F.contact)
+async def contact_received(message: Message):
+    user_id = message.from_user.id
+
+    nf = NEWFIELD_STATE.get(user_id)
+    if nf and nf.get("step") == "phone":
+        nf["phone"] = message.contact.phone_number
+        nf["step"] = "offer"
+        await message.answer(OFFER_TEXT, reply_markup=ReplyKeyboardRemove())
+        return
+
+    st = STATE.get(user_id)
+    if not st or st["step"] != "phone":
+        return
+    if not message.contact or message.contact.user_id != user_id:
+        await message.answer("Iltimos, faqat o'z raqamingizni yuboring.")
+        return
+    phone = message.contact.phone_number
+    full_name = st["name"]
+    field_id, date_str, time_str = st["pending"]
+    STATE.pop(user_id, None)
+    save_user_info(user_id, phone, full_name)
+    await message.answer("Rahmat!", reply_markup=customer_menu_keyboard())
+    if time_str in get_booked_times(field_id, date_str):
+        await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring.")
+        return
+    await finalize_booking(field_id, date_str, time_str, user_id, full_name, message.from_user.username, phone)
 
 @dp.callback_query(F.data.startswith("fapprove|"))
 async def field_approve(callback: CallbackQuery):
@@ -457,26 +518,6 @@ async def btn_stats(message: Message):
         return
     ADMIN_STATE.pop(message.from_user.id, None)
     await stats_command(message)
-
-@dp.message(F.contact)
-async def contact_received(message: Message):
-    user_id = message.from_user.id
-    st = STATE.get(user_id)
-    if not st or st["step"] != "phone":
-        return
-    if not message.contact or message.contact.user_id != user_id:
-        await message.answer("Iltimos, faqat o'z raqamingizni yuboring.")
-        return
-    phone = message.contact.phone_number
-    full_name = st["name"]
-    field_id, date_str, time_str = st["pending"]
-    STATE.pop(user_id, None)
-    save_user_info(user_id, phone, full_name)
-    await message.answer("Rahmat!", reply_markup=customer_menu_keyboard())
-    if time_str in get_booked_times(field_id, date_str):
-        await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring.")
-        return
-    await finalize_booking(field_id, date_str, time_str, user_id, full_name, message.from_user.username, phone)
 
 @dp.callback_query(F.data.startswith("cancel|"))
 async def cancel_booking(callback: CallbackQuery):
