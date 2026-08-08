@@ -60,7 +60,8 @@ async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
 def admin_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📋 Bronlar"), KeyboardButton(text="➕ Bron qo'shish")],
-        [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🧑‍💼 Admin tayinlash")]
+        [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🧑‍💼 Admin tayinlash")],
+        [KeyboardButton(text="🗑 Maydonlarni boshqarish")]
     ], resize_keyboard=True)
 
 def customer_menu_keyboard():
@@ -126,6 +127,10 @@ def init_db():
                      ("futbol", "Beshariq tumani, Farg'ona viloyati", "Mini Futbol", "140,000", "⚽", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
         conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
                      ("voleybol", "Beshariq tumani, Farg'ona viloyati", "Voleybol", "60,000", "🏐", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
+    else:
+        # Eski bazadagi placeholder qiymatni tuzatish
+        conn.execute("UPDATE fields SET region=? WHERE id IN ('futbol','voleybol') AND region=?",
+                     ("Beshariq tumani, Farg'ona viloyati", "QISHLOQ_NOMI"))
     conn.commit()
     conn.close()
 
@@ -138,6 +143,12 @@ def get_field(field_id):
 def get_approved_fields():
     conn = db()
     rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id FROM fields WHERE status='approved' ORDER BY region, name").fetchall()
+    conn.close()
+    return rows
+
+def get_all_fields():
+    conn = db()
+    rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status FROM fields ORDER BY status DESC, region, name").fetchall()
     conn.close()
     return rows
 
@@ -200,6 +211,12 @@ def get_booking(booking_id):
 def delete_booking(booking_id):
     conn = db()
     conn.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
+    conn.commit()
+    conn.close()
+
+def delete_field(field_id):
+    conn = db()
+    conn.execute("DELETE FROM fields WHERE id=?", (field_id,))
     conn.commit()
     conn.close()
 
@@ -272,6 +289,20 @@ def phone_request_keyboard():
         keyboard=[[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]],
         resize_keyboard=True, one_time_keyboard=True
     )
+
+def get_forward_user_id(message: Message):
+    origin = getattr(message, "forward_origin", None)
+    if origin is not None:
+        sender_user = getattr(origin, "sender_user", None)
+        if sender_user:
+            return sender_user.id
+        return None
+    if message.forward_from:
+        return message.forward_from.id
+    return None
+
+def is_forwarded(message: Message):
+    return bool(getattr(message, "forward_origin", None) or message.forward_from or message.forward_sender_name)
 
 async def finalize_booking(field_id, date_str, time_str, user_id, full_name, username, phone):
     add_booking(field_id, date_str, time_str, user_id, full_name, phone)
@@ -498,10 +529,7 @@ async def field_reject(callback: CallbackQuery):
         return
     field_id = callback.data.split("|")[1]
     f = get_field(field_id)
-    conn = db()
-    conn.execute("DELETE FROM fields WHERE id=?", (field_id,))
-    conn.commit()
-    conn.close()
+    delete_field(field_id)
     await callback.message.edit_text("❌ Rad etildi.")
     await callback.answer()
     if f and f[6]:
@@ -577,6 +605,56 @@ async def admin_add_start(message: Message):
     buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]}", callback_data=f"aset|{f[0]}")] for f in fields]
     await message.answer("📞 Telefon orqali kelgan mijoz uchun bron qo'shish\n\nQaysi maydon?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
+@dp.message(F.text == "📋 Bronlar")
+async def btn_admin_panel(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    ADMIN_STATE.pop(message.from_user.id, None)
+    await admin_panel(message)
+
+@dp.message(F.text == "➕ Bron qo'shish")
+async def btn_admin_add(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    await admin_add_start(message)
+
+@dp.message(F.text == "📊 Statistika")
+async def btn_stats(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    ADMIN_STATE.pop(message.from_user.id, None)
+    await stats_command(message)
+
+@dp.message(F.text == "🗑 Maydonlarni boshqarish")
+async def btn_manage_fields(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    rows = get_all_fields()
+    if not rows:
+        await message.answer("Hozircha maydon yo'q.")
+        return
+    await message.answer(f"🗂 Jami {len(rows)} ta maydon (faol va kutilayotgan):")
+    for f in rows:
+        field_id, region, name, price, emoji, location, owner_id, status = f
+        status_label = "✅ faol" if status == "approved" else "⏳ kutilmoqda"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"fdel|{field_id}")]
+        ])
+        await message.answer(
+            f"{emoji} {name} ({status_label})\n📍 {region}\n📌 {location}\n💰 {price} so'm",
+            reply_markup=kb
+        )
+
+@dp.callback_query(F.data.startswith("fdel|"))
+async def field_delete_cb(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    field_id = callback.data.split("|")[1]
+    delete_field(field_id)
+    await callback.message.edit_text("🗑 Maydon o'chirildi.")
+    await callback.answer()
+
 @dp.message(F.text == "🧑‍💼 Admin tayinlash")
 async def btn_assign_admin(message: Message):
     if message.from_user.id != OWNER_ID:
@@ -597,14 +675,15 @@ async def assign_pick_field(callback: CallbackQuery):
     ASSIGN_STATE[callback.from_user.id] = {"field": field_id}
     await safe_edit(callback, "Endi shu odamning istalgan xabarini menga FORWARD qiling.\n\n(U avval botga /start yozgan bo'lishi shart)")
 
-@dp.message(F.func(lambda m: m.from_user.id == OWNER_ID and m.from_user.id in ASSIGN_STATE and (m.forward_from or m.forward_sender_name)))
+@dp.message(F.func(lambda m: m.from_user.id == OWNER_ID and m.from_user.id in ASSIGN_STATE and is_forwarded(m)))
 async def assign_receive_forward(message: Message):
     st = ASSIGN_STATE.pop(message.from_user.id)
     field_id = st["field"]
-    if not message.forward_from:
-        await message.answer("Kechirasiz, bu odamning maxfiylik sozlamalari ID'ni yashiryapti.\n\n@userinfobot orqali uning ID raqamini oling va menga yuboring.")
+    new_admin_id = get_forward_user_id(message)
+    if not new_admin_id:
+        await message.answer("Kechirasiz, bu odamning maxfiylik sozlamalari ID'ni yashiryapti.\n\n@userinfobot orqali uning ID raqamini oling va menga oddiy matn qilib yuboring.")
+        ASSIGN_STATE[message.from_user.id] = {"field": field_id, "manual": True}
         return
-    new_admin_id = message.forward_from.id
     conn = db()
     conn.execute("UPDATE fields SET owner_id=? WHERE id=?", (new_admin_id, field_id))
     conn.commit()
@@ -613,6 +692,27 @@ async def assign_receive_forward(message: Message):
     await message.answer(f"✅ \"{f[2]}\" maydoniga yangi admin tayinlandi.", reply_markup=admin_menu_keyboard())
     try:
         await bot.send_message(new_admin_id, f"👨‍💼 Sizga \"{f[2]}\" maydoni bo'yicha admin huquqi berildi.\n\nEndi shu maydonga tushgan yangi bronlar haqida sizga avtomatik xabar keladi.")
+    except Exception:
+        pass
+
+@dp.message(F.text, F.func(lambda m: m.from_user.id == OWNER_ID and m.from_user.id in ASSIGN_STATE and ASSIGN_STATE.get(m.from_user.id, {}).get("manual") and not m.text.startswith("/")))
+async def assign_manual_id(message: Message):
+    st = ASSIGN_STATE.pop(message.from_user.id)
+    field_id = st["field"]
+    digits = "".join(c for c in message.text if c.isdigit())
+    if not digits:
+        await message.answer("Iltimos, faqat raqam yuboring.")
+        ASSIGN_STATE[message.from_user.id] = st
+        return
+    new_admin_id = int(digits)
+    conn = db()
+    conn.execute("UPDATE fields SET owner_id=? WHERE id=?", (new_admin_id, field_id))
+    conn.commit()
+    conn.close()
+    f = get_field(field_id)
+    await message.answer(f"✅ \"{f[2]}\" maydoniga yangi admin tayinlandi.", reply_markup=admin_menu_keyboard())
+    try:
+        await bot.send_message(new_admin_id, f"👨‍💼 Sizga \"{f[2]}\" maydoni bo'yicha admin huquqi berildi.")
     except Exception:
         pass
 
