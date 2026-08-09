@@ -113,9 +113,11 @@ def init_db():
     conn.execute("CREATE TABLE IF NOT EXISTS fields (id TEXT PRIMARY KEY, region TEXT, name TEXT, price TEXT, emoji TEXT, location TEXT, owner_id INTEGER, status TEXT DEFAULT 'pending')")
     for stmt in [
         "ALTER TABLE bookings ADD COLUMN phone TEXT",
+        "ALTER TABLE bookings ADD COLUMN reminded INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN full_name TEXT",
         "ALTER TABLE fields ADD COLUMN owner_phone TEXT",
         "ALTER TABLE fields ADD COLUMN offer_accepted TEXT",
+        "ALTER TABLE fields ADD COLUMN photo_id TEXT",
     ]:
         try:
             conn.execute(stmt)
@@ -128,7 +130,6 @@ def init_db():
         conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
                      ("voleybol", "Beshariq tumani, Farg'ona viloyati", "Voleybol", "60,000", "🏐", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
     else:
-        # Eski bazadagi placeholder qiymatni tuzatish
         conn.execute("UPDATE fields SET region=? WHERE id IN ('futbol','voleybol') AND region=?",
                      ("Beshariq tumani, Farg'ona viloyati", "QISHLOQ_NOMI"))
     conn.commit()
@@ -136,7 +137,7 @@ def init_db():
 
 def get_field(field_id):
     conn = db()
-    row = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status,owner_phone FROM fields WHERE id=?", (field_id,)).fetchone()
+    row = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status,owner_phone,photo_id FROM fields WHERE id=?", (field_id,)).fetchone()
     conn.close()
     return row
 
@@ -244,6 +245,8 @@ def field_menu(region_name):
     buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]} — {f[3]} so'm", callback_data=f"field|{f[0]}")] for f in fields]
     if not buttons:
         buttons = [[InlineKeyboardButton(text="Hozircha maydon yo'q", callback_data="taken")]]
+    elif len(fields) >= 2:
+        buttons.append([InlineKeyboardButton(text="🆚 Taqqoslash", callback_data=f"compare|{region_name}")])
     buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_regions")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -352,11 +355,7 @@ async def btn_book(message: Message):
     if not regions:
         await message.answer("Hozircha faol maydon yo'q.")
         return
-    if len(regions) == 1:
-        region_name = list(regions.keys())[0]
-        await message.answer(f"📍 {region_name}\n\nQaysi maydonni tanlaysiz?", reply_markup=field_menu(region_name))
-    else:
-        await message.answer("Hududni tanlang:", reply_markup=region_menu())
+    await message.answer("Hududni tanlang:", reply_markup=region_menu())
 
 @dp.message(F.text == "📋 Mening bronlarim")
 async def btn_my_bookings(message: Message):
@@ -417,6 +416,13 @@ async def geo_tuman(callback: CallbackQuery):
         pass
     await callback.answer()
 
+@dp.message(F.photo, F.func(lambda m: m.from_user.id in NEWFIELD_STATE and NEWFIELD_STATE.get(m.from_user.id, {}).get("step") == "photo"))
+async def newfield_photo(message: Message):
+    st = NEWFIELD_STATE[message.from_user.id]
+    st["photo_id"] = message.photo[-1].file_id
+    st["step"] = "offer"
+    await message.answer(OFFER_TEXT)
+
 @dp.message(F.text, F.func(lambda m: m.from_user.id in NEWFIELD_STATE and not m.text.startswith("/")))
 async def newfield_flow(message: Message):
     st = NEWFIELD_STATE[message.from_user.id]
@@ -445,17 +451,27 @@ async def newfield_flow(message: Message):
             await message.answer("Iltimos, to'g'ri telefon raqam kiriting.")
             return
         st["phone"] = message.text.strip()
-        st["step"] = "offer"
-        await message.answer(OFFER_TEXT, reply_markup=ReplyKeyboardRemove())
+        st["step"] = "photo"
+        await message.answer(
+            "📸 Maydon rasmini yuboring (bitta foto)\n\nAgar hozircha rasm bo'lmasa, \"o'tkazib yuborish\" deb yozing:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    elif st["step"] == "photo":
+        if "o'tkaz" in message.text.strip().lower():
+            st["step"] = "offer"
+            await message.answer(OFFER_TEXT)
+        else:
+            await message.answer("Iltimos, rasm yuboring yoki \"o'tkazib yuborish\" deb yozing.")
     elif st["step"] == "offer":
         if message.text.strip().lower() != "roziman":
             await message.answer("Davom etish uchun aniq \"Roziman\" deb yozing.")
             return
         field_id = f"f{int(datetime.now().timestamp())}"
+        photo_id = st.get("photo_id")
         conn = db()
         conn.execute(
-            "INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,owner_phone,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (field_id, st["region"], st["name"], st["price"], "🏟", st["location"], message.from_user.id, "pending", st["phone"], now_tj().strftime("%Y-%m-%d %H:%M"))
+            "INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,owner_phone,offer_accepted,photo_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (field_id, st["region"], st["name"], st["price"], "🏟", st["location"], message.from_user.id, "pending", st["phone"], now_tj().strftime("%Y-%m-%d %H:%M"), photo_id)
         )
         conn.commit()
         conn.close()
@@ -466,12 +482,12 @@ async def newfield_flow(message: Message):
                 InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"fapprove|{field_id}"),
                 InlineKeyboardButton(text="❌ Rad etish", callback_data=f"freject|{field_id}")
             ]])
+            caption = f"🆕 Yangi maydon so'rovi:\n\n📍 {st['region']}\n📌 {st['location']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📞 Egasi raqami: {st['phone']}\n👤 @{message.from_user.username or message.from_user.first_name}\n\n⚠️ Tasdiqlashdan oldin raqamiga qo'ng'iroq qilib tekshiring!"
             try:
-                await bot.send_message(
-                    OWNER_ID,
-                    f"🆕 Yangi maydon so'rovi:\n\n📍 {st['region']}\n📌 {st['location']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📞 Egasi raqami: {st['phone']}\n👤 @{message.from_user.username or message.from_user.first_name}\n\n⚠️ Tasdiqlashdan oldin raqamiga qo'ng'iroq qilib tekshiring!",
-                    reply_markup=kb
-                )
+                if photo_id:
+                    await bot.send_photo(OWNER_ID, photo=photo_id, caption=caption, reply_markup=kb)
+                else:
+                    await bot.send_message(OWNER_ID, caption, reply_markup=kb)
             except Exception:
                 pass
 
@@ -482,8 +498,11 @@ async def contact_received(message: Message):
     nf = NEWFIELD_STATE.get(user_id)
     if nf and nf.get("step") == "phone":
         nf["phone"] = message.contact.phone_number
-        nf["step"] = "offer"
-        await message.answer(OFFER_TEXT, reply_markup=ReplyKeyboardRemove())
+        nf["step"] = "photo"
+        await message.answer(
+            "📸 Maydon rasmini yuboring (bitta foto)\n\nAgar hozircha rasm bo'lmasa, \"o'tkazib yuborish\" deb yozing:",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
 
     st = STATE.get(user_id)
@@ -514,7 +533,13 @@ async def field_approve(callback: CallbackQuery):
     conn.commit()
     conn.close()
     f = get_field(field_id)
-    await callback.message.edit_text(f"✅ Tasdiqlandi: {f[2] if f else field_id}")
+    try:
+        await callback.message.edit_caption(caption=f"✅ Tasdiqlandi: {f[2] if f else field_id}")
+    except (TelegramBadRequest, TypeError):
+        try:
+            await callback.message.edit_text(f"✅ Tasdiqlandi: {f[2] if f else field_id}")
+        except TelegramBadRequest:
+            pass
     await callback.answer()
     if f and f[6]:
         try:
@@ -530,7 +555,13 @@ async def field_reject(callback: CallbackQuery):
     field_id = callback.data.split("|")[1]
     f = get_field(field_id)
     delete_field(field_id)
-    await callback.message.edit_text("❌ Rad etildi.")
+    try:
+        await callback.message.edit_caption(caption="❌ Rad etildi.")
+    except (TelegramBadRequest, TypeError):
+        try:
+            await callback.message.edit_text("❌ Rad etildi.")
+        except TelegramBadRequest:
+            pass
     await callback.answer()
     if f and f[6]:
         try:
@@ -850,16 +881,25 @@ async def back_regions(callback: CallbackQuery):
     if not regions:
         await safe_edit(callback, "Hozircha faol maydon yo'q.")
         return
-    if len(regions) == 1:
-        region_name = list(regions.keys())[0]
-        await safe_edit(callback, f"📍 {region_name}\n\nQaysi maydonni tanlaysiz?", field_menu(region_name))
-    else:
-        await safe_edit(callback, "Hududni tanlang:", region_menu())
+    await safe_edit(callback, "Hududni tanlang:", region_menu())
 
 @dp.callback_query(F.data.startswith("region|"))
 async def region_selected(callback: CallbackQuery):
     region_name = callback.data.split("|", 1)[1]
     await safe_edit(callback, f"📍 {region_name}\n\nQaysi maydonni tanlaysiz?", field_menu(region_name))
+
+@dp.callback_query(F.data.startswith("compare|"))
+async def compare_fields(callback: CallbackQuery):
+    region_name = callback.data.split("|", 1)[1]
+    fields = [f for f in get_approved_fields() if f[1] == region_name]
+    if len(fields) < 2:
+        await callback.answer("Solishtirish uchun kamida 2 ta maydon kerak", show_alert=True)
+        return
+    text = f"🆚 {region_name}\n\n"
+    for f in fields:
+        text += f"{f[4]} {f[2]}\n💰 {f[3]} so'm/soat\n📌 {f[5]}\n\n"
+    await callback.message.answer(text)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("field|"))
 async def field_selected(callback: CallbackQuery):
@@ -868,11 +908,17 @@ async def field_selected(callback: CallbackQuery):
     if not f or f[7] != "approved":
         await callback.answer("Bu maydon topilmadi", show_alert=True)
         return
-    await safe_edit(
-        callback,
-        f"{f[4]} {f[2]}\n📍 {f[5]}\n💰 {f[3]} so'm/soat\n\nQachonga bron qilmoqchisiz?",
-        day_menu(field_id)
-    )
+    text = f"{f[4]} {f[2]}\n📍 {f[5]}\n💰 {f[3]} so'm/soat\n\nQachonga bron qilmoqchisiz?"
+    photo_id = f[9]
+    if photo_id:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+        await bot.send_photo(callback.from_user.id, photo=photo_id, caption=text, reply_markup=day_menu(field_id))
+        await callback.answer()
+    else:
+        await safe_edit(callback, text, day_menu(field_id))
 
 @dp.callback_query(F.data.startswith("days|"))
 async def show_days(callback: CallbackQuery):
@@ -909,9 +955,42 @@ async def book_slot(callback: CallbackQuery):
         try:
             await callback.message.edit_text(f"✅ Bron qilindi!\n\n{f[4]} {f[2]}\n📅 {date_str}\n🕐 {time_str}")
         except TelegramBadRequest:
-            pass
+            try:
+                await callback.message.edit_caption(caption=f"✅ Bron qilindi!\n\n{f[4]} {f[2]}\n📅 {date_str}\n🕐 {time_str}")
+            except (TelegramBadRequest, TypeError):
+                pass
     else:
         await start_info_flow(callback.from_user.id, (field_id, date_str, time_str))
+
+async def reminder_loop():
+    while True:
+        try:
+            now = now_tj()
+            target = now + timedelta(hours=1)
+            target_date = target.strftime("%Y-%m-%d")
+            target_hour_str = f"{target.hour:02d}:00"
+            conn = db()
+            rows = conn.execute(
+                "SELECT id, field, date, time, user_id FROM bookings WHERE date=? AND time=? AND (reminded IS NULL OR reminded=0) AND user_id>0",
+                (target_date, target_hour_str)
+            ).fetchall()
+            for r in rows:
+                booking_id, field_id, date, time, user_id = r
+                f = get_field(field_id)
+                if f:
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            f"⏰ Eslatma!\n\nBugun soat {time} da {f[4]} {f[2]} da o'yiningiz bor!\n📍 {f[5]}\n\nO'z vaqtida yetib boring!"
+                        )
+                    except Exception:
+                        pass
+                conn.execute("UPDATE bookings SET reminded=1 WHERE id=?", (booking_id,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        await asyncio.sleep(60)
 
 async def handle_health(request):
     return web.Response(text="O'yingoh bot ishlayapti")
@@ -959,6 +1038,7 @@ async def start_web_app():
 async def main():
     init_db()
     await start_web_app()
+    asyncio.create_task(reminder_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
