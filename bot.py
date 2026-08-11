@@ -1,11 +1,12 @@
 import asyncio
 import os
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InputMediaPhoto
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.exceptions import TelegramBadRequest
@@ -28,6 +29,7 @@ STATE = {}
 ADMIN_STATE = {}
 NEWFIELD_STATE = {}
 ASSIGN_STATE = {}
+EDIT_STATE = {}
 
 VILOYATLAR = {
     "Qoraqalpog'iston Respublikasi": ["Nukus shahri","Amudaryo","Beruniy","Kegeyli","Qonliko'l","Qorao'zak","Qo'ng'irot","Mo'ynoq","Nukus tumani","Taxiatosh","Taxtako'pir","To'rtko'l","Xo'jayli","Chimboy","Sho'manoy","Ellikqal'a"],
@@ -69,6 +71,14 @@ def customer_menu_keyboard():
         [KeyboardButton(text="⚽ Bron qilish")],
         [KeyboardButton(text="📋 Mening bronlarim")],
         [KeyboardButton(text="🏟 Gazon egasiman")]
+    ], resize_keyboard=True)
+
+def owner_menu_keyboard():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📅 Mening maydonlarim bronlari"), KeyboardButton(text="➕ Bron qo'shish")],
+        [KeyboardButton(text="✏️ Maydonlarni tahrirlash")],
+        [KeyboardButton(text="🏟 Gazon egasiman")],
+        [KeyboardButton(text="⚽ Bron qilish")]
     ], resize_keyboard=True)
 
 def viloyat_keyboard():
@@ -123,15 +133,6 @@ def init_db():
             conn.execute(stmt)
         except sqlite3.OperationalError:
             pass
-    existing = conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0]
-    if existing == 0:
-        conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
-                     ("futbol", "Beshariq tumani, Farg'ona viloyati", "Mini Futbol", "140,000", "⚽", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
-        conn.execute("INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,offer_accepted) VALUES (?,?,?,?,?,?,?,?,?)",
-                     ("voleybol", "Beshariq tumani, Farg'ona viloyati", "Voleybol", "60,000", "🏐", "19-maktab yonida", OWNER_ID, "approved", "asoschi"))
-    else:
-        conn.execute("UPDATE fields SET region=? WHERE id IN ('futbol','voleybol') AND region=?",
-                     ("Beshariq tumani, Farg'ona viloyati", "QISHLOQ_NOMI"))
     conn.commit()
     conn.close()
 
@@ -147,6 +148,12 @@ def get_approved_fields():
     conn.close()
     return rows
 
+def get_owned_fields(user_id):
+    conn = db()
+    rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id FROM fields WHERE owner_id=? AND status='approved' ORDER BY name", (user_id,)).fetchall()
+    conn.close()
+    return rows
+
 def get_all_fields():
     conn = db()
     rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status FROM fields ORDER BY status DESC, region, name").fetchall()
@@ -158,6 +165,35 @@ def get_regions():
     for f in get_approved_fields():
         regions.setdefault(f[1], []).append(f)
     return regions
+
+def can_manage(user_id, field_id):
+    if user_id == OWNER_ID:
+        return True
+    f = get_field(field_id)
+    return bool(f and f[6] == user_id)
+
+def get_photos(raw):
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+        return [raw]
+    except Exception:
+        return [raw]
+
+def add_photo(field_id, file_id):
+    f = get_field(field_id)
+    photos = get_photos(f[9]) if f else []
+    if len(photos) >= 4:
+        return False
+    photos.append(file_id)
+    conn = db()
+    conn.execute("UPDATE fields SET photo_id=? WHERE id=?", (json.dumps(photos), field_id))
+    conn.commit()
+    conn.close()
+    return True
 
 def get_user_info(user_id):
     conn = db()
@@ -189,6 +225,16 @@ def get_upcoming_bookings():
     rows = conn.execute(
         "SELECT b.id, b.field, b.date, b.time, b.user_name, b.user_id, b.phone, f.name, f.emoji "
         "FROM bookings b LEFT JOIN fields f ON b.field=f.id WHERE b.date>=? ORDER BY b.date, b.time", (today,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def get_owner_bookings(user_id):
+    today = now_tj().strftime("%Y-%m-%d")
+    conn = db()
+    rows = conn.execute(
+        "SELECT b.id, b.field, b.date, b.time, b.user_name, b.user_id, b.phone, f.name, f.emoji "
+        "FROM bookings b LEFT JOIN fields f ON b.field=f.id WHERE f.owner_id=? AND b.date>=? ORDER BY b.date, b.time", (user_id, today)
     ).fetchall()
     conn.close()
     return rows
@@ -334,12 +380,21 @@ async def start_info_flow(user_id, pending):
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    STATE.pop(message.from_user.id, None)
-    ADMIN_STATE.pop(message.from_user.id, None)
-    NEWFIELD_STATE.pop(message.from_user.id, None)
-    ASSIGN_STATE.pop(message.from_user.id, None)
-    if message.from_user.id == OWNER_ID:
+    user_id = message.from_user.id
+    STATE.pop(user_id, None)
+    ADMIN_STATE.pop(user_id, None)
+    NEWFIELD_STATE.pop(user_id, None)
+    ASSIGN_STATE.pop(user_id, None)
+    EDIT_STATE.pop(user_id, None)
+    if user_id == OWNER_ID:
         await message.answer("👨‍💼 Bosh menejer paneliga xush kelibsiz!\n\nQuyidagi tugmalardan foydalaning:", reply_markup=admin_menu_keyboard())
+        return
+    owned = get_owned_fields(user_id)
+    if owned:
+        await message.answer(
+            f"👨‍💼 Xush kelibsiz! Sizda {len(owned)} ta faol maydon bor.\n\nQuyidagi tugmalardan foydalaning:",
+            reply_markup=owner_menu_keyboard()
+        )
         return
     await message.answer(
         f"⚽ Xush kelibsiz, {message.from_user.first_name}!\n\n🏟 O'yingoh — maydon bron qilish boti!",
@@ -372,6 +427,24 @@ async def btn_my_bookings(message: Message):
             [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"mycancel|{booking_id}")]
         ])
         await message.answer(f"{femoji} {fname}\n📅 {date}  🕐 {time}", reply_markup=keyboard)
+
+@dp.message(F.text == "📅 Mening maydonlarim bronlari")
+async def btn_owner_bookings(message: Message):
+    user_id = message.from_user.id
+    if user_id == OWNER_ID:
+        return
+    rows = get_owner_bookings(user_id)
+    if not rows:
+        await message.answer("📋 Hozircha aktiv bronlar yo'q.")
+        return
+    await message.answer(f"📋 Jami {len(rows)} ta aktiv bron:")
+    for r in rows:
+        booking_id, field_id, date, time, uname, uid, phone, fname, femoji = r
+        phone_line = f"\n📞 {phone}" if phone else ""
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel|{booking_id}")]
+        ])
+        await message.answer(f"{femoji} {fname}\n📅 {date}  🕐 {time}\n👤 {uname}{phone_line}", reply_markup=keyboard)
 
 @dp.message(F.text == "🏟 Gazon egasiman")
 async def btn_add_field(message: Message):
@@ -468,10 +541,11 @@ async def newfield_flow(message: Message):
             return
         field_id = f"f{int(datetime.now().timestamp())}"
         photo_id = st.get("photo_id")
+        photo_json = json.dumps([photo_id]) if photo_id else None
         conn = db()
         conn.execute(
             "INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,owner_phone,offer_accepted,photo_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (field_id, st["region"], st["name"], st["price"], "🏟", st["location"], message.from_user.id, "pending", st["phone"], now_tj().strftime("%Y-%m-%d %H:%M"), photo_id)
+            (field_id, st["region"], st["name"], st["price"], "🏟", st["location"], message.from_user.id, "pending", st["phone"], now_tj().strftime("%Y-%m-%d %H:%M"), photo_json)
         )
         conn.commit()
         conn.close()
@@ -490,6 +564,101 @@ async def newfield_flow(message: Message):
                     await bot.send_message(OWNER_ID, caption, reply_markup=kb)
             except Exception:
                 pass
+
+@dp.message(F.text == "✏️ Maydonlarni tahrirlash")
+async def btn_edit_fields(message: Message):
+    user_id = message.from_user.id
+    if user_id == OWNER_ID:
+        return
+    fields = get_owned_fields(user_id)
+    if not fields:
+        await message.answer("Sizda hozircha faol maydon yo'q.")
+        return
+    buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]}", callback_data=f"editf|{f[0]}")] for f in fields]
+    await message.answer("Qaysi maydonni tahrirlaysiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("editf|"))
+async def edit_field_menu(callback: CallbackQuery):
+    field_id = callback.data.split("|")[1]
+    if not can_manage(callback.from_user.id, field_id):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    f = get_field(field_id)
+    photos_count = len(get_photos(f[9]))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Narxni o'zgartirish", callback_data=f"editprice|{field_id}")],
+        [InlineKeyboardButton(text="📌 Manzilni o'zgartirish", callback_data=f"editloc|{field_id}")],
+        [InlineKeyboardButton(text=f"📸 Rasm qo'shish ({photos_count}/4)", callback_data=f"editphoto|{field_id}")],
+    ])
+    await safe_edit(callback, f"{f[4]} {f[2]}\n💰 {f[3]} so'm\n📌 {f[5]}\n\nNimani tahrirlaysiz?", kb)
+
+@dp.callback_query(F.data.startswith("editprice|"))
+async def edit_price_start(callback: CallbackQuery):
+    field_id = callback.data.split("|")[1]
+    if not can_manage(callback.from_user.id, field_id):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    EDIT_STATE[callback.from_user.id] = {"field": field_id, "type": "price"}
+    await callback.message.answer("Yangi narxni yozing (faqat raqam, masalan: 150000):")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("editloc|"))
+async def edit_loc_start(callback: CallbackQuery):
+    field_id = callback.data.split("|")[1]
+    if not can_manage(callback.from_user.id, field_id):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    EDIT_STATE[callback.from_user.id] = {"field": field_id, "type": "location"}
+    await callback.message.answer("Yangi manzilni yozing:")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("editphoto|"))
+async def edit_photo_start(callback: CallbackQuery):
+    field_id = callback.data.split("|")[1]
+    if not can_manage(callback.from_user.id, field_id):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    f = get_field(field_id)
+    if len(get_photos(f[9])) >= 4:
+        await callback.answer("Maksimal 4 ta rasm, avval birortasini olib tashlang", show_alert=True)
+        return
+    EDIT_STATE[callback.from_user.id] = {"field": field_id, "type": "photo"}
+    await callback.message.answer("Yangi rasmni yuboring:")
+    await callback.answer()
+
+@dp.message(F.text, F.func(lambda m: m.from_user.id in EDIT_STATE and EDIT_STATE.get(m.from_user.id, {}).get("type") in ("price", "location") and not m.text.startswith("/")))
+async def edit_text_handler(message: Message):
+    st = EDIT_STATE.pop(message.from_user.id)
+    field_id = st["field"]
+    if not can_manage(message.from_user.id, field_id):
+        return
+    if st["type"] == "price":
+        digits = "".join(c for c in message.text if c.isdigit())
+        if not digits:
+            await message.answer("Iltimos, raqam kiriting.")
+            EDIT_STATE[message.from_user.id] = st
+            return
+        new_price = f"{int(digits):,}".replace(",", " ")
+        conn = db()
+        conn.execute("UPDATE fields SET price=? WHERE id=?", (new_price, field_id))
+        conn.commit()
+        conn.close()
+        await message.answer(f"✅ Narx yangilandi: {new_price} so'm")
+    elif st["type"] == "location":
+        conn = db()
+        conn.execute("UPDATE fields SET location=? WHERE id=?", (message.text.strip(), field_id))
+        conn.commit()
+        conn.close()
+        await message.answer("✅ Manzil yangilandi.")
+
+@dp.message(F.photo, F.func(lambda m: m.from_user.id in EDIT_STATE and EDIT_STATE.get(m.from_user.id, {}).get("type") == "photo"))
+async def edit_photo_receive(message: Message):
+    st = EDIT_STATE.pop(message.from_user.id)
+    field_id = st["field"]
+    if not can_manage(message.from_user.id, field_id):
+        return
+    ok = add_photo(field_id, message.photo[-1].file_id)
+    await message.answer("✅ Rasm qo'shildi." if ok else "Maksimal 4 ta rasm chegarasiga yetdingiz.")
 
 @dp.message(F.contact)
 async def contact_received(message: Message):
@@ -543,7 +712,7 @@ async def field_approve(callback: CallbackQuery):
     await callback.answer()
     if f and f[6]:
         try:
-            await bot.send_message(f[6], f"🎉 Tabriklaymiz! \"{f[2]}\" maydoningiz tasdiqlandi va botda faol bo'ldi.")
+            await bot.send_message(f[6], f"🎉 Tabriklaymiz! \"{f[2]}\" maydoningiz tasdiqlandi va botda faol bo'ldi.\n\nEndi botga /start yozing — sizga maxsus boshqaruv paneli ochiladi.")
         except Exception:
             pass
 
@@ -627,15 +796,6 @@ async def admin_panel(message: Message):
             reply_markup=keyboard
         )
 
-@dp.message(Command("add"))
-async def admin_add_start(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-    ADMIN_STATE[message.from_user.id] = {"step": "field"}
-    fields = get_approved_fields()
-    buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]}", callback_data=f"aset|{f[0]}")] for f in fields]
-    await message.answer("📞 Telefon orqali kelgan mijoz uchun bron qo'shish\n\nQaysi maydon?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
 @dp.message(F.text == "📋 Bronlar")
 async def btn_admin_panel(message: Message):
     if message.from_user.id != OWNER_ID:
@@ -645,9 +805,20 @@ async def btn_admin_panel(message: Message):
 
 @dp.message(F.text == "➕ Bron qo'shish")
 async def btn_admin_add(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-    await admin_add_start(message)
+    user_id = message.from_user.id
+    if user_id == OWNER_ID:
+        fields = get_approved_fields()
+    else:
+        fields = get_owned_fields(user_id)
+        if not fields:
+            return
+    ADMIN_STATE[user_id] = {"step": "field"}
+    buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]}", callback_data=f"aset|{f[0]}")] for f in fields]
+    await message.answer("📞 Telefon orqali kelgan mijoz uchun bron qo'shish\n\nQaysi maydon?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.message(Command("add"))
+async def admin_add_command(message: Message):
+    await btn_admin_add(message)
 
 @dp.message(F.text == "📊 Statistika")
 async def btn_stats(message: Message):
@@ -722,7 +893,7 @@ async def assign_receive_forward(message: Message):
     f = get_field(field_id)
     await message.answer(f"✅ \"{f[2]}\" maydoniga yangi admin tayinlandi.", reply_markup=admin_menu_keyboard())
     try:
-        await bot.send_message(new_admin_id, f"👨‍💼 Sizga \"{f[2]}\" maydoni bo'yicha admin huquqi berildi.\n\nEndi shu maydonga tushgan yangi bronlar haqida sizga avtomatik xabar keladi.")
+        await bot.send_message(new_admin_id, f"👨‍💼 Sizga \"{f[2]}\" maydoni bo'yicha admin huquqi berildi.\n\nBotga /start yozing — sizga maxsus panel ochiladi.")
     except Exception:
         pass
 
@@ -749,15 +920,15 @@ async def assign_manual_id(message: Message):
 
 @dp.callback_query(F.data.startswith("cancel|"))
 async def cancel_booking(callback: CallbackQuery):
-    if callback.from_user.id != OWNER_ID:
-        await callback.answer("Sizda ruxsat yo'q", show_alert=True)
-        return
     booking_id = int(callback.data.split("|")[1])
     booking = get_booking(booking_id)
     if not booking:
         await callback.answer("Bu bron allaqachon bekor qilingan", show_alert=True)
         return
     field_id, date, time, user_id, user_name = booking
+    if not can_manage(callback.from_user.id, field_id):
+        await callback.answer("Sizda ruxsat yo'q", show_alert=True)
+        return
     f = get_field(field_id)
     delete_booking(booking_id)
     await callback.message.edit_text(f"❌ Bekor qilindi:\n{f[4]} {f[2]}\n📅 {date} 🕐 {time}\n👤 {user_name}")
@@ -773,10 +944,10 @@ async def cancel_booking(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("aset|"))
 async def admin_add_field(callback: CallbackQuery):
-    if callback.from_user.id != OWNER_ID:
+    field_id = callback.data.split("|")[1]
+    if not can_manage(callback.from_user.id, field_id):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
-    field_id = callback.data.split("|")[1]
     ADMIN_STATE[callback.from_user.id] = {"step": "day", "field": field_id}
     buttons = []
     for i in range(7):
@@ -786,15 +957,15 @@ async def admin_add_field(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("aday|"))
 async def admin_add_day(callback: CallbackQuery):
-    if callback.from_user.id != OWNER_ID:
+    parts = callback.data.split("|")
+    field_id = parts[1]
+    if not can_manage(callback.from_user.id, field_id):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
-    parts = callback.data.split("|")
     if len(parts) == 3:
-        _, field_id, offset = parts
+        offset = parts[2]
         date_str = (now_tj() + timedelta(days=int(offset))).strftime("%Y-%m-%d")
     else:
-        _, field_id = parts
         st = ADMIN_STATE.get(callback.from_user.id, {})
         date_str = st.get("date")
     ADMIN_STATE[callback.from_user.id] = {"step": "time", "field": field_id, "date": date_str}
@@ -802,10 +973,10 @@ async def admin_add_day(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("apick|"))
 async def admin_add_time(callback: CallbackQuery):
-    if callback.from_user.id != OWNER_ID:
+    _, field_id, date_str, time_str = callback.data.split("|")
+    if not can_manage(callback.from_user.id, field_id):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
-    _, field_id, date_str, time_str = callback.data.split("|")
     if time_str in get_booked_times(field_id, date_str):
         await callback.answer("Bu vaqt band", show_alert=True)
         return
@@ -813,7 +984,7 @@ async def admin_add_time(callback: CallbackQuery):
     await callback.answer()
     await callback.message.answer("✍️ Mijozning ism-familiyasini yozing:")
 
-@dp.message(F.text, F.func(lambda m: m.from_user.id == OWNER_ID and m.from_user.id in ADMIN_STATE and not m.text.startswith("/")))
+@dp.message(F.text, F.func(lambda m: m.from_user.id in ADMIN_STATE and not m.text.startswith("/")))
 async def admin_add_text(message: Message):
     st = ADMIN_STATE[message.from_user.id]
     if st["step"] == "name":
@@ -830,7 +1001,8 @@ async def admin_add_text(message: Message):
         add_booking(field_id, date_str, time_str, 0, st["name"], phone)
         f = get_field(field_id)
         ADMIN_STATE.pop(message.from_user.id, None)
-        await message.answer(f"✅ Qo'lda bron qo'shildi!\n\n{f[4]} {f[2]}\n📅 {date_str}  🕐 {time_str}\n👤 {st['name']}\n📞 {phone}", reply_markup=admin_menu_keyboard())
+        kb = admin_menu_keyboard() if message.from_user.id == OWNER_ID else owner_menu_keyboard()
+        await message.answer(f"✅ Qo'lda bron qo'shildi!\n\n{f[4]} {f[2]}\n📅 {date_str}  🕐 {time_str}\n👤 {st['name']}\n📞 {phone}", reply_markup=kb)
 
 @dp.message(F.text, F.func(lambda m: m.from_user.id in STATE and not m.text.startswith("/")))
 async def info_flow_text(message: Message):
@@ -909,13 +1081,21 @@ async def field_selected(callback: CallbackQuery):
         await callback.answer("Bu maydon topilmadi", show_alert=True)
         return
     text = f"{f[4]} {f[2]}\n📍 {f[5]}\n💰 {f[3]} so'm/soat\n\nQachonga bron qilmoqchisiz?"
-    photo_id = f[9]
-    if photo_id:
+    photos = get_photos(f[9])
+    if photos:
         try:
             await callback.message.delete()
         except TelegramBadRequest:
             pass
-        await bot.send_photo(callback.from_user.id, photo=photo_id, caption=text, reply_markup=day_menu(field_id))
+        try:
+            if len(photos) == 1:
+                await bot.send_photo(callback.from_user.id, photo=photos[0], caption=text, reply_markup=day_menu(field_id))
+            else:
+                media = [InputMediaPhoto(media=photos[0], caption=text)] + [InputMediaPhoto(media=p) for p in photos[1:4]]
+                await bot.send_media_group(callback.from_user.id, media=media)
+                await bot.send_message(callback.from_user.id, "Qachonga bron qilmoqchisiz?", reply_markup=day_menu(field_id))
+        except Exception:
+            await bot.send_message(callback.from_user.id, text, reply_markup=day_menu(field_id))
         await callback.answer()
     else:
         await safe_edit(callback, text, day_menu(field_id))
