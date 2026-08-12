@@ -31,6 +31,14 @@ NEWFIELD_STATE = {}
 ASSIGN_STATE = {}
 EDIT_STATE = {}
 
+SPORT_TYPES = [
+    ("futbol", "Futbol", "⚽"),
+    ("voleybol", "Voleybol", "🏐"),
+    ("tennis", "Tennis", "🎾"),
+    ("boshqa", "Boshqa", "🏟"),
+]
+SPORT_MAP = {slug: (label, emoji) for slug, label, emoji in SPORT_TYPES}
+
 VILOYATLAR = {
     "Qoraqalpog'iston Respublikasi": ["Nukus shahri","Amudaryo","Beruniy","Kegeyli","Qonliko'l","Qorao'zak","Qo'ng'irot","Mo'ynoq","Nukus tumani","Taxiatosh","Taxtako'pir","To'rtko'l","Xo'jayli","Chimboy","Sho'manoy","Ellikqal'a"],
     "Andijon viloyati": ["Andijon shahri","Xonabod shahri","Andijon tumani","Asaka","Baliqchi","Bo'z","Buloqboshi","Jalaquduq","Izboskan","Qo'rg'ontepa","Marhamat","Oltinko'l","Paxtaobod","Ulug'nor","Xo'jaobod","Shahrixon"],
@@ -55,8 +63,21 @@ def db():
 async def safe_edit(callback: CallbackQuery, text: str, keyboard=None):
     try:
         await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+        return
     except TelegramBadRequest:
         pass
+    try:
+        await callback.message.edit_caption(caption=text, reply_markup=keyboard)
+        await callback.answer()
+        return
+    except (TelegramBadRequest, TypeError):
+        pass
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await bot.send_message(callback.from_user.id, text, reply_markup=keyboard)
     await callback.answer()
 
 def admin_menu_keyboard():
@@ -80,6 +101,13 @@ def owner_menu_keyboard():
         [KeyboardButton(text="🏟 Gazon egasiman")],
         [KeyboardButton(text="⚽ Bron qilish")]
     ], resize_keyboard=True)
+
+def menu_for(user_id):
+    if user_id == OWNER_ID:
+        return admin_menu_keyboard()
+    if get_owned_fields(user_id):
+        return owner_menu_keyboard()
+    return customer_menu_keyboard()
 
 def viloyat_keyboard():
     buttons, row = [], []
@@ -105,6 +133,10 @@ def tuman_keyboard(vidx):
     buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="geoback")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def sport_select_keyboard():
+    buttons = [[InlineKeyboardButton(text=f"{e} {l}", callback_data=f"regsport|{s}")] for s, l, e in SPORT_TYPES]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 OFFER_TEXT = (
     "📄 Hamkorlik shartlari (oferta)\n\n"
     "1. O'yingoh — sport maydonlarini bron qilish uchun Telegram-bot xizmati.\n"
@@ -128,29 +160,33 @@ def init_db():
         "ALTER TABLE fields ADD COLUMN owner_phone TEXT",
         "ALTER TABLE fields ADD COLUMN offer_accepted TEXT",
         "ALTER TABLE fields ADD COLUMN photo_id TEXT",
+        "ALTER TABLE fields ADD COLUMN sport_type TEXT",
     ]:
         try:
             conn.execute(stmt)
         except sqlite3.OperationalError:
             pass
+    conn.execute("UPDATE fields SET sport_type='futbol' WHERE (sport_type IS NULL OR sport_type='') AND name LIKE '%utbol%'")
+    conn.execute("UPDATE fields SET sport_type='voleybol' WHERE (sport_type IS NULL OR sport_type='') AND name LIKE '%oleybol%'")
+    conn.execute("UPDATE fields SET sport_type='boshqa' WHERE sport_type IS NULL OR sport_type=''")
     conn.commit()
     conn.close()
 
 def get_field(field_id):
     conn = db()
-    row = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status,owner_phone,photo_id FROM fields WHERE id=?", (field_id,)).fetchone()
+    row = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,status,owner_phone,photo_id,sport_type FROM fields WHERE id=?", (field_id,)).fetchone()
     conn.close()
     return row
 
 def get_approved_fields():
     conn = db()
-    rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id FROM fields WHERE status='approved' ORDER BY region, name").fetchall()
+    rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,sport_type FROM fields WHERE status='approved' ORDER BY region, name").fetchall()
     conn.close()
     return rows
 
 def get_owned_fields(user_id):
     conn = db()
-    rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id FROM fields WHERE owner_id=? AND status='approved' ORDER BY name", (user_id,)).fetchall()
+    rows = conn.execute("SELECT id,region,name,price,emoji,location,owner_id,sport_type FROM fields WHERE owner_id=? AND status='approved' ORDER BY name", (user_id,)).fetchall()
     conn.close()
     return rows
 
@@ -286,14 +322,29 @@ def region_menu():
     buttons = [[InlineKeyboardButton(text=f"📍 {r}", callback_data=f"region|{r}")] for r in regions.keys()]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def field_menu(region_name):
+def sport_menu(region_name):
     fields = [f for f in get_approved_fields() if f[1] == region_name]
+    seen, present = set(), []
+    for f in fields:
+        st = f[7] if len(f) > 7 and f[7] else "boshqa"
+        if st not in seen:
+            seen.add(st)
+            label, emoji = SPORT_MAP.get(st, ("Boshqa", "🏟"))
+            present.append((st, label, emoji))
+    buttons = [[InlineKeyboardButton(text=f"{e} {l}", callback_data=f"sport|{region_name}|{s}")] for s, l, e in present]
+    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_regions")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def field_menu(region_name, sport_type=None):
+    fields = [f for f in get_approved_fields() if f[1] == region_name and (sport_type is None or (len(f) > 7 and f[7] == sport_type))]
     buttons = [[InlineKeyboardButton(text=f"{f[4]} {f[2]} — {f[3]} so'm", callback_data=f"field|{f[0]}")] for f in fields]
     if not buttons:
         buttons = [[InlineKeyboardButton(text="Hozircha maydon yo'q", callback_data="taken")]]
     elif len(fields) >= 2:
-        buttons.append([InlineKeyboardButton(text="🆚 Taqqoslash", callback_data=f"compare|{region_name}")])
-    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_regions")])
+        cb = f"compare|{region_name}|{sport_type}" if sport_type else f"compare|{region_name}"
+        buttons.append([InlineKeyboardButton(text="🆚 Taqqoslash", callback_data=cb)])
+    back_cb = f"sportback|{region_name}" if sport_type else "back_regions"
+    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def day_menu(field_id):
@@ -319,11 +370,11 @@ def slots_menu(field_id, date_str, prefix="book"):
     for h in HOURS:
         is_past = is_today and int(h.split(":")[0]) <= now.hour
         if h in booked:
-            row.append(InlineKeyboardButton(text=f"🔴 {h}", callback_data="taken"))
+            row.append(InlineKeyboardButton(text=f"🟢 {h}", callback_data="taken"))
         elif is_past:
             row.append(InlineKeyboardButton(text=f"🟡 {h}", callback_data="taken"))
         else:
-            row.append(InlineKeyboardButton(text=f"🟢 {h}", callback_data=f"{prefix}|{field_id}|{date_str}|{h}"))
+            row.append(InlineKeyboardButton(text=f"🔴 {h}", callback_data=f"{prefix}|{field_id}|{date_str}|{h}"))
         if len(row) == 3:
             buttons.append(row)
             row = []
@@ -482,12 +533,22 @@ async def geo_tuman(callback: CallbackQuery):
     st["viloyat"] = viloyat
     st["tuman"] = tuman
     st["region"] = f"{tuman}, {viloyat}"
+    st["step"] = "sport"
+    await safe_edit(callback, f"📍 {tuman}, {viloyat}\n\nSport turini tanlang:", sport_select_keyboard())
+
+@dp.callback_query(F.data.startswith("regsport|"))
+async def reg_sport_selected(callback: CallbackQuery):
+    if callback.from_user.id not in NEWFIELD_STATE:
+        await callback.answer()
+        return
+    slug = callback.data.split("|")[1]
+    label, emoji = SPORT_MAP.get(slug, ("Boshqa", "🏟"))
+    st = NEWFIELD_STATE[callback.from_user.id]
+    st["sport_type"] = slug
+    st["sport_label"] = label
+    st["sport_emoji"] = emoji
     st["step"] = "location"
-    try:
-        await callback.message.edit_text(f"📍 {tuman}, {viloyat}\n\nQishloq/mahalla va aniq manzilni yozing\n(masalan: Guliston MFY, markaziy maydon yonida):")
-    except TelegramBadRequest:
-        pass
-    await callback.answer()
+    await safe_edit(callback, f"{emoji} {label}\n\nQishloq/mahalla va aniq manzilni yozing\n(masalan: Guliston MFY, markaziy maydon yonida):")
 
 @dp.message(F.photo, F.func(lambda m: m.from_user.id in NEWFIELD_STATE and NEWFIELD_STATE.get(m.from_user.id, {}).get("step") == "photo"))
 async def newfield_photo(message: Message):
@@ -542,21 +603,23 @@ async def newfield_flow(message: Message):
         field_id = f"f{int(datetime.now().timestamp())}"
         photo_id = st.get("photo_id")
         photo_json = json.dumps([photo_id]) if photo_id else None
+        sport_emoji = st.get("sport_emoji", "🏟")
+        sport_type = st.get("sport_type", "boshqa")
         conn = db()
         conn.execute(
-            "INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,owner_phone,offer_accepted,photo_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (field_id, st["region"], st["name"], st["price"], "🏟", st["location"], message.from_user.id, "pending", st["phone"], now_tj().strftime("%Y-%m-%d %H:%M"), photo_json)
+            "INSERT INTO fields (id,region,name,price,emoji,location,owner_id,status,owner_phone,offer_accepted,photo_id,sport_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (field_id, st["region"], st["name"], st["price"], sport_emoji, st["location"], message.from_user.id, "pending", st["phone"], now_tj().strftime("%Y-%m-%d %H:%M"), photo_json, sport_type)
         )
         conn.commit()
         conn.close()
         NEWFIELD_STATE.pop(message.from_user.id, None)
-        await message.answer("✅ Arizangiz yuborildi! Tez orada siz bilan bog'lanib, ma'lumotlarni tasdiqlaymiz.", reply_markup=customer_menu_keyboard())
+        await message.answer("✅ Arizangiz yuborildi! Tez orada siz bilan bog'lanib, ma'lumotlarni tasdiqlaymiz.", reply_markup=menu_for(message.from_user.id))
         if OWNER_ID:
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"fapprove|{field_id}"),
                 InlineKeyboardButton(text="❌ Rad etish", callback_data=f"freject|{field_id}")
             ]])
-            caption = f"🆕 Yangi maydon so'rovi:\n\n📍 {st['region']}\n📌 {st['location']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📞 Egasi raqami: {st['phone']}\n👤 @{message.from_user.username or message.from_user.first_name}\n\n⚠️ Tasdiqlashdan oldin raqamiga qo'ng'iroq qilib tekshiring!"
+            caption = f"🆕 Yangi maydon so'rovi:\n\n🏆 Sport turi: {st.get('sport_label','Boshqa')}\n📍 {st['region']}\n📌 {st['location']}\n🏟 {st['name']}\n💰 {st['price']} so'm/soat\n📞 Egasi raqami: {st['phone']}\n👤 @{message.from_user.username or message.from_user.first_name}\n\n⚠️ Tasdiqlashdan oldin raqamiga qo'ng'iroq qilib tekshiring!"
             try:
                 if photo_id:
                     await bot.send_photo(OWNER_ID, photo=photo_id, caption=caption, reply_markup=kb)
@@ -685,7 +748,7 @@ async def contact_received(message: Message):
     field_id, date_str, time_str = st["pending"]
     STATE.pop(user_id, None)
     save_user_info(user_id, phone, full_name)
-    await message.answer("Rahmat!", reply_markup=customer_menu_keyboard())
+    await message.answer("Rahmat!", reply_markup=menu_for(user_id))
     if time_str in get_booked_times(field_id, date_str):
         await message.answer("Kechirasiz, navbatingizda ushbu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring.")
         return
@@ -1001,8 +1064,7 @@ async def admin_add_text(message: Message):
         add_booking(field_id, date_str, time_str, 0, st["name"], phone)
         f = get_field(field_id)
         ADMIN_STATE.pop(message.from_user.id, None)
-        kb = admin_menu_keyboard() if message.from_user.id == OWNER_ID else owner_menu_keyboard()
-        await message.answer(f"✅ Qo'lda bron qo'shildi!\n\n{f[4]} {f[2]}\n📅 {date_str}  🕐 {time_str}\n👤 {st['name']}\n📞 {phone}", reply_markup=kb)
+        await message.answer(f"✅ Qo'lda bron qo'shildi!\n\n{f[4]} {f[2]}\n📅 {date_str}  🕐 {time_str}\n👤 {st['name']}\n📞 {phone}", reply_markup=menu_for(message.from_user.id))
 
 @dp.message(F.text, F.func(lambda m: m.from_user.id in STATE and not m.text.startswith("/")))
 async def info_flow_text(message: Message):
@@ -1041,7 +1103,7 @@ async def info_flow_text(message: Message):
         field_id, date_str, time_str = st["pending"]
         STATE.pop(user_id, None)
         save_user_info(user_id, phone, full_name)
-        await message.answer("Rahmat!", reply_markup=customer_menu_keyboard())
+        await message.answer("Rahmat!", reply_markup=menu_for(user_id))
         if time_str in get_booked_times(field_id, date_str):
             await message.answer("Kechirasiz, bu vaqt band bo'lib qoldi. Qaytadan urinib ko'ring.")
             return
@@ -1058,12 +1120,25 @@ async def back_regions(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("region|"))
 async def region_selected(callback: CallbackQuery):
     region_name = callback.data.split("|", 1)[1]
-    await safe_edit(callback, f"📍 {region_name}\n\nQaysi maydonni tanlaysiz?", field_menu(region_name))
+    await safe_edit(callback, f"📍 {region_name}\n\nSport turini tanlang:", sport_menu(region_name))
+
+@dp.callback_query(F.data.startswith("sportback|"))
+async def sport_back(callback: CallbackQuery):
+    region_name = callback.data.split("|", 1)[1]
+    await safe_edit(callback, f"📍 {region_name}\n\nSport turini tanlang:", sport_menu(region_name))
+
+@dp.callback_query(F.data.startswith("sport|"))
+async def sport_selected(callback: CallbackQuery):
+    _, region_name, sport_slug = callback.data.split("|", 2)
+    label, emoji = SPORT_MAP.get(sport_slug, ("Boshqa", "🏟"))
+    await safe_edit(callback, f"{emoji} {label} — {region_name}\n\nQaysi maydonni tanlaysiz?", field_menu(region_name, sport_slug))
 
 @dp.callback_query(F.data.startswith("compare|"))
 async def compare_fields(callback: CallbackQuery):
-    region_name = callback.data.split("|", 1)[1]
-    fields = [f for f in get_approved_fields() if f[1] == region_name]
+    parts = callback.data.split("|")
+    region_name = parts[1]
+    sport_type = parts[2] if len(parts) > 2 else None
+    fields = [f for f in get_approved_fields() if f[1] == region_name and (sport_type is None or (len(f) > 7 and f[7] == sport_type))]
     if len(fields) < 2:
         await callback.answer("Solishtirish uchun kamida 2 ta maydon kerak", show_alert=True)
         return
@@ -1113,7 +1188,7 @@ async def show_slots(callback: CallbackQuery):
     label = date_obj.strftime("%d-%m-%Y")
     await safe_edit(
         callback,
-        f"🕐 {label}\n\n🟢 bo'sh  🔴 band  🟡 o'tgan\nVaqtni tanlang:",
+        f"🕐 {label}\n\n🔴 bo'sh  🟢 band  🟡 o'tgan\nVaqtni tanlang:",
         slots_menu(field_id, date_str)
     )
 
